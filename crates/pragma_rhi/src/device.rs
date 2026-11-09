@@ -17,9 +17,11 @@ use crate::binding::{
 };
 use crate::handle::Table;
 use crate::pending::{Finished, Pending};
-use crate::pipeline::{ComputeKey, RenderKey, Stage, validate_compute, validate_render};
+use crate::pipeline::{
+    ComputeKey, PipelineMeta, RenderKey, Stage, late_sizes, validate_compute, validate_render,
+};
 use crate::resource::{validate_buffer, validate_sampler, validate_texture, validate_texture_view};
-use crate::shader::{self, ParsedShader};
+use crate::shader::{self, EntryReflection, ParsedShader};
 use crate::{
     Backend, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupInfo, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindGroupLayoutInfo, BindingResource,
@@ -46,25 +48,25 @@ pub struct DeviceDescriptor<'a> {
 // They saturate instead of overflowing: a saturated counter only keeps a resource alive.
 
 #[derive(Debug)]
-struct BufferEntry {
-    info: BufferInfo,
+pub(crate) struct BufferEntry {
+    pub(crate) info: BufferInfo,
     users: u32,
-    obj: BufferObj,
+    pub(crate) obj: BufferObj,
 }
 
 #[derive(Debug)]
-struct TextureEntry {
-    info: TextureInfo,
+pub(crate) struct TextureEntry {
+    pub(crate) info: TextureInfo,
     bytes: u64,
     views: u32,
-    obj: TextureObj,
+    pub(crate) obj: TextureObj,
 }
 
 #[derive(Debug)]
-struct ViewEntry {
-    info: TextureViewInfo,
+pub(crate) struct ViewEntry {
+    pub(crate) info: TextureViewInfo,
     users: u32,
-    obj: TextureViewObj,
+    pub(crate) obj: TextureViewObj,
 }
 
 #[derive(Debug)]
@@ -83,22 +85,21 @@ struct ModuleEntry {
 }
 
 #[derive(Debug)]
-struct GroupLayoutEntry {
-    info: BindGroupLayoutInfo,
+pub(crate) struct GroupLayoutEntry {
+    pub(crate) info: BindGroupLayoutInfo,
     users: u32,
     obj: BindGroupLayoutObj,
 }
 
 #[derive(Debug)]
-struct GroupEntry {
-    info: BindGroupInfo,
-    #[expect(dead_code, reason = "read by command recording (roadmap M3)")]
-    obj: BindGroupObj,
+pub(crate) struct GroupEntry {
+    pub(crate) info: BindGroupInfo,
+    pub(crate) obj: BindGroupObj,
 }
 
 #[derive(Debug)]
-struct PipelineLayoutEntry {
-    info: PipelineLayoutInfo,
+pub(crate) struct PipelineLayoutEntry {
+    pub(crate) info: PipelineLayoutInfo,
     /// See [`ModuleEntry::serial`].
     serial: u64,
     users: u32,
@@ -106,17 +107,17 @@ struct PipelineLayoutEntry {
 }
 
 #[derive(Debug)]
-struct RenderEntry {
-    info: RenderPipelineInfo,
-    #[expect(dead_code, reason = "read by command recording (roadmap M3)")]
-    obj: RenderPipelineObj,
+pub(crate) struct RenderEntry {
+    pub(crate) info: RenderPipelineInfo,
+    pub(crate) meta: PipelineMeta,
+    pub(crate) obj: RenderPipelineObj,
 }
 
 #[derive(Debug)]
-struct ComputeEntry {
-    info: ComputePipelineInfo,
-    #[expect(dead_code, reason = "read by command recording (roadmap M3)")]
-    obj: ComputePipelineObj,
+pub(crate) struct ComputeEntry {
+    pub(crate) info: ComputePipelineInfo,
+    pub(crate) meta: PipelineMeta,
+    pub(crate) obj: ComputePipelineObj,
 }
 
 /// Compiled pipelines by everything they depend on. An entry is dropped when its shader module
@@ -141,6 +142,20 @@ enum Prepared<O, J> {
     Cached(O),
     Compile(J),
 }
+
+/// A validated render pipeline: its cache key, its info and draw metadata, its object or job.
+type PreparedRender = (
+    RenderKey,
+    (RenderPipelineInfo, PipelineMeta),
+    Prepared<RenderPipelineObj, RenderJob>,
+);
+
+/// See [`PreparedRender`].
+type PreparedCompute = (
+    ComputeKey,
+    (ComputePipelineInfo, PipelineMeta),
+    Prepared<ComputePipelineObj, ComputeJob>,
+);
 
 /// Device ids start at 1 and are never reused within a process, so a handle of a dropped
 /// device is foreign to every later device.
@@ -198,19 +213,19 @@ const fn in_use(resource: ResourceKind, users: u32) -> Result<(), RhiError> {
 /// ```
 #[derive(Debug)]
 pub struct Device {
-    limits: Limits,
-    backend: DeviceBackend,
+    pub(crate) limits: Limits,
+    pub(crate) backend: DeviceBackend,
     next_serial: u64,
-    buffers: Table<Buffer, BufferEntry>,
-    textures: Table<Texture, TextureEntry>,
-    views: Table<TextureView, ViewEntry>,
+    pub(crate) buffers: Table<Buffer, BufferEntry>,
+    pub(crate) textures: Table<Texture, TextureEntry>,
+    pub(crate) views: Table<TextureView, ViewEntry>,
     samplers: Table<Sampler, SamplerEntry>,
     shader_modules: Table<ShaderModule, ModuleEntry>,
-    bind_group_layouts: Table<BindGroupLayout, GroupLayoutEntry>,
-    bind_groups: Table<BindGroup, GroupEntry>,
-    pipeline_layouts: Table<PipelineLayout, PipelineLayoutEntry>,
-    render_pipelines: Table<RenderPipeline, RenderEntry>,
-    compute_pipelines: Table<ComputePipeline, ComputeEntry>,
+    pub(crate) bind_group_layouts: Table<BindGroupLayout, GroupLayoutEntry>,
+    pub(crate) bind_groups: Table<BindGroup, GroupEntry>,
+    pub(crate) pipeline_layouts: Table<PipelineLayout, PipelineLayoutEntry>,
+    pub(crate) render_pipelines: Table<RenderPipeline, RenderEntry>,
+    pub(crate) compute_pipelines: Table<ComputePipeline, ComputeEntry>,
     cache: PipelineCache,
 }
 
@@ -283,7 +298,7 @@ impl Device {
         self.backend.allocated()
     }
 
-    fn alive(&self) -> Result<(), RhiError> {
+    pub(crate) fn alive(&self) -> Result<(), RhiError> {
         if self.backend.is_lost() {
             Err(RhiError::DeviceLost)
         } else {
@@ -820,14 +835,7 @@ impl Device {
     fn prepare_render(
         &mut self,
         desc: &RenderPipelineDescriptor<'_>,
-    ) -> Result<
-        (
-            RenderKey,
-            RenderPipelineInfo,
-            Prepared<RenderPipelineObj, RenderJob>,
-        ),
-        RhiError,
-    > {
+    ) -> Result<PreparedRender, RhiError> {
         self.alive()?;
         let layout = self.pipeline_layouts.get(desc.layout)?;
         let groups = layout
@@ -862,6 +870,11 @@ impl Device {
         };
         let (key, info) =
             validate_render(desc, layout.serial, &groups, vertex, fragment, &self.limits)?;
+        let stages: Vec<&EntryReflection> = core::iter::once(vertex.entry)
+            .chain(fragment.map(|stage| stage.entry))
+            .collect();
+        let meta = key.meta(late_sizes(&stages, &groups));
+        let info = (info, meta);
         if let Some(obj) = self.cache.render.get(&key) {
             let obj = obj.clone();
             self.cache.hits = self.cache.hits.saturating_add(1);
@@ -880,7 +893,7 @@ impl Device {
 
     fn install_render(
         &mut self,
-        finished: Finished<RenderKey, RenderPipelineInfo, RenderPipelineObj>,
+        finished: Finished<RenderKey, (RenderPipelineInfo, PipelineMeta), RenderPipelineObj>,
     ) -> Result<RenderPipeline, RhiError> {
         self.alive()?;
         // The layout may have been destroyed while the pipeline compiled.
@@ -894,8 +907,10 @@ impl Device {
         }
         let layout = self.pipeline_layouts.get_mut(finished.layout)?;
         layout.users = layout.users.saturating_add(1);
+        let (info, meta) = finished.info;
         self.render_pipelines.insert(RenderEntry {
-            info: finished.info,
+            info,
+            meta,
             obj: finished.obj,
         })
     }
@@ -1010,14 +1025,7 @@ impl Device {
     fn prepare_compute(
         &mut self,
         desc: &ComputePipelineDescriptor<'_>,
-    ) -> Result<
-        (
-            ComputeKey,
-            ComputePipelineInfo,
-            Prepared<ComputePipelineObj, ComputeJob>,
-        ),
-        RhiError,
-    > {
+    ) -> Result<PreparedCompute, RhiError> {
         self.alive()?;
         let layout = self.pipeline_layouts.get(desc.layout)?;
         let groups = layout
@@ -1038,6 +1046,11 @@ impl Device {
                 .entry_point(ShaderStage::Compute, desc.entry_point)?,
         };
         let (key, info) = validate_compute(desc, layout.serial, &groups, stage, &self.limits)?;
+        let meta = PipelineMeta {
+            late_sizes: late_sizes(&[stage.entry], &groups),
+            ..PipelineMeta::default()
+        };
+        let info = (info, meta);
         if let Some(obj) = self.cache.compute.get(&key) {
             let obj = obj.clone();
             self.cache.hits = self.cache.hits.saturating_add(1);
@@ -1052,7 +1065,7 @@ impl Device {
 
     fn install_compute(
         &mut self,
-        finished: Finished<ComputeKey, ComputePipelineInfo, ComputePipelineObj>,
+        finished: Finished<ComputeKey, (ComputePipelineInfo, PipelineMeta), ComputePipelineObj>,
     ) -> Result<ComputePipeline, RhiError> {
         self.alive()?;
         self.pipeline_layouts.get(finished.layout)?;
@@ -1065,8 +1078,10 @@ impl Device {
         }
         let layout = self.pipeline_layouts.get_mut(finished.layout)?;
         layout.users = layout.users.saturating_add(1);
+        let (info, meta) = finished.info;
         self.compute_pipelines.insert(ComputeEntry {
-            info: finished.info,
+            info,
+            meta,
             obj: finished.obj,
         })
     }

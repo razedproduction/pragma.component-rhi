@@ -11,8 +11,9 @@ use crate::pipeline::{
     PrimitiveTopology, StencilFaceState, StencilOperation, VertexFormat, VertexStepMode,
 };
 use crate::{
-    AddressMode, BufferUsages, CompareFunction, FilterMode, ShaderStages, TextureAspect,
-    TextureDimension, TextureFormat, TextureUsages, TextureViewDimension,
+    AddressMode, BufferUsages, Color, CompareFunction, FilterMode, LoadOp, Operations, Origin3d,
+    ShaderStages, StoreOp, TexelCopyBufferLayout, TextureAspect, TextureDimension, TextureFormat,
+    TextureUsages, TextureViewDimension,
 };
 
 fn map_flags<O: bitflags::Flags + Copy, T: bitflags::Flags + Copy>(ours: O, pairs: &[(O, T)]) -> T {
@@ -276,10 +277,7 @@ pub(super) fn primitive(state: &PrimitiveState) -> wgpu::PrimitiveState {
             PrimitiveTopology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
             PrimitiveTopology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
         },
-        strip_index_format: state.strip_index_format.map(|format| match format {
-            IndexFormat::Uint16 => wgpu::IndexFormat::Uint16,
-            IndexFormat::Uint32 => wgpu::IndexFormat::Uint32,
-        }),
+        strip_index_format: state.strip_index_format.map(index_format),
         front_face: match state.front_face {
             FrontFace::Ccw => wgpu::FrontFace::Ccw,
             FrontFace::Cw => wgpu::FrontFace::Cw,
@@ -388,6 +386,65 @@ pub(super) fn color_target(target: &ColorTargetState) -> wgpu::ColorTargetState 
         format: texture_format(target.format),
         blend: target.blend.as_ref().map(blend),
         write_mask: color_writes(target.write_mask),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Commands
+
+pub(super) const fn index_format(format: IndexFormat) -> wgpu::IndexFormat {
+    match format {
+        IndexFormat::Uint16 => wgpu::IndexFormat::Uint16,
+        IndexFormat::Uint32 => wgpu::IndexFormat::Uint32,
+    }
+}
+
+pub(super) const fn color(color: Color) -> wgpu::Color {
+    wgpu::Color {
+        r: color.r,
+        g: color.g,
+        b: color.b,
+        a: color.a,
+    }
+}
+
+pub(super) fn operations<V: Copy, W>(
+    ops: Operations<V>,
+    value: impl Fn(V) -> W,
+) -> wgpu::Operations<W> {
+    wgpu::Operations {
+        load: match ops.load {
+            LoadOp::Clear(clear) => wgpu::LoadOp::Clear(value(clear)),
+            LoadOp::Load => wgpu::LoadOp::Load,
+        },
+        store: match ops.store {
+            StoreOp::Store => wgpu::StoreOp::Store,
+            StoreOp::Discard => wgpu::StoreOp::Discard,
+        },
+    }
+}
+
+pub(super) const fn origin(origin: Origin3d) -> wgpu::Origin3d {
+    wgpu::Origin3d {
+        x: origin.x,
+        y: origin.y,
+        z: origin.z,
+    }
+}
+
+pub(super) const fn extent(size: crate::Extent3d) -> wgpu::Extent3d {
+    wgpu::Extent3d {
+        width: size.width,
+        height: size.height,
+        depth_or_array_layers: size.depth_or_array_layers,
+    }
+}
+
+pub(super) const fn buffer_layout(layout: TexelCopyBufferLayout) -> wgpu::TexelCopyBufferLayout {
+    wgpu::TexelCopyBufferLayout {
+        offset: layout.offset,
+        bytes_per_row: layout.bytes_per_row,
+        rows_per_image: layout.rows_per_image,
     }
 }
 

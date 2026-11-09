@@ -456,6 +456,30 @@ fn check_side(limit: &'static str, side: u32, max: u32) -> Result<(), RhiError> 
     }
 }
 
+/// The size of mip level `mip`: width and height (1 for 1D) halve per level, never below 1;
+/// `depth_or_array_layers` is the halved depth of a 3D texture and the layer count otherwise.
+pub(crate) fn mip_extent(info: &TextureInfo, mip: u32) -> Extent3d {
+    let shrink = |side: u32| side.checked_shr(mip).unwrap_or(0).max(1);
+    let size = info.size;
+    match info.dimension {
+        TextureDimension::D1 => Extent3d {
+            width: shrink(size.width),
+            height: 1,
+            depth_or_array_layers: size.depth_or_array_layers,
+        },
+        TextureDimension::D2 => Extent3d {
+            width: shrink(size.width),
+            height: shrink(size.height),
+            depth_or_array_layers: size.depth_or_array_layers,
+        },
+        TextureDimension::D3 => Extent3d {
+            width: shrink(size.width),
+            height: shrink(size.height),
+            depth_or_array_layers: shrink(size.depth_or_array_layers),
+        },
+    }
+}
+
 /// The memory a texture needs: every mip level of every layer of every sample. `None` on overflow.
 fn texture_bytes(info: &TextureInfo) -> Option<u64> {
     let mut per_layer: u64 = 0;

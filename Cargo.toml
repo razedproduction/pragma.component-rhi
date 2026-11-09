@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -14,7 +14,7 @@ categories = ["game-development", "graphics", "rendering::graphics-api"]
 
 [workspace.dependencies]
 # Internal crates: exact versions (lockstep), as in pragma.core (DECISIONS.md #4).
-pragma_rhi = { path = "crates/pragma_rhi", version = "=0.2.0" }
+pragma_rhi = { path = "crates/pragma_rhi", version = "=0.3.0" }
 
 # The runtime core this component is built on (DECISIONS.md #2).
 pragma_core = { version = "1.0.0", default-features = false }

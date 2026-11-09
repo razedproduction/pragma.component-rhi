@@ -1,6 +1,6 @@
 # Architecture
 
-Status: §2, §3, §3a and §5 are implemented (M1, M2); the rest is the intended design. Sections marked
+Status: §2, §3, §3a, §4 and §5 are implemented (M1–M3); the rest is the intended design. Sections marked
 *open* are decided in the milestone named there and recorded in `DECISIONS.md`.
 
 ## 1. Place in the stack
@@ -67,13 +67,29 @@ runs only the backend compilation on the pragma.core executor's blocking pool; `
 the result on the device at a point the frame thread chooses, so the device has a single owner
 and no locks.
 
-## 4. Command recording on the frame graph
+## 4. Command recording on the frame graph and submission
 
 Each recording task declares which resources it reads and writes, like an ECS system declares
-component access. Tasks become frame-graph tasks with those accesses, so pragma.core rejects two
-tasks that write the same resource without an explicit order at build time. Command buffers are
-recorded in parallel and submitted in the graph's topological order, which keeps submission
-deterministic on any number of workers.
+component access: by type, the engine's types that hold the handles. Tasks become frame-graph
+tasks with those accesses, so pragma.core rejects two tasks that write the same resource without
+an explicit order at build time. Command buffers are recorded in parallel and returned in the
+graph's topological order, which keeps submission deterministic on any number of workers
+(`CommandGraph`).
+
+Recording does not touch the device (DECISIONS #15): a `CommandEncoder` appends plain commands
+naming resources by handle, so it needs no lock and no `&Device` and cannot fail. `Device::submit`
+then validates every command of every buffer against the live tables — handles, usages,
+alignments and ranges, attachments, pipeline and bind group compatibility, dynamic offsets, draw
+ranges, usage conflicts within a pass or dispatch — resolves handles to backend objects, and only
+then hands the whole submission to the backend. A broken rule rejects all of it with
+`RhiError::InvalidCommand`, naming the command buffer's label (the task) and the command. wgpu
+encodes the validated commands on the frame thread; that translation is cheap next to recording
+and is what M5's benchmarks will measure.
+
+The null backend keeps the bytes of buffers and textures (DECISIONS #16) and executes queue
+writes, copies, buffer clears, attachment clears, resolves and discards with the results a GPU
+produces; draws and dispatches are validated and change nothing. Readback is blocking before
+M4 (`read_buffer`, `read_texture`).
 
 ## 5. Failure model
 

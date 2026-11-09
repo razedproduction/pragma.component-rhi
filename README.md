@@ -15,10 +15,14 @@ types; a null backend runs everything except pixels without a GPU.
 
 ## Status
 
-**M2 (0.2.0) — shaders and pipelines.** Adapters of Vulkan, D3D12 and the null backend;
-devices; buffers, textures, views and samplers; shader modules validated by naga on every
-backend; bind groups, pipeline layouts, render and compute pipelines with a pipeline cache and
-compilation on pragma.core's async pool. Command recording on the frame graph comes next (M3). See the [roadmap](docs/roadmap.md) and the
+**M3 (0.3.0) — commands and the vertical slice.** Adapters of Vulkan, D3D12 and the null
+backend; devices; buffers, textures, views and samplers; shader modules validated by naga on
+every backend; bind groups, pipeline layouts, render and compute pipelines with a pipeline cache
+and compilation on pragma.core's async pool; command encoders with render and compute passes and
+copies, recorded in parallel as frame-graph tasks and validated as a whole at submission; queue
+writes and buffer/texture readback. The null backend executes copies, clears and resolves byte
+for byte like a GPU. `cargo run --example rhi_sim` runs the whole slice on every adapter.
+Surfaces and frames in flight come next (M4). See the [roadmap](docs/roadmap.md) and the
 [architecture](docs/architecture.md).
 
 ## Building

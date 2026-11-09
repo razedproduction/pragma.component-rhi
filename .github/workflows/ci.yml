@@ -27,6 +27,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
+      # The vertical slice (roadmap M3) on the null backend: identical hashes on 1 and N workers.
+      - run: cargo run -p pragma_rhi --example rhi_sim -- --null
       - run: cargo doc --workspace --no-deps --all-features
 
   msrv:

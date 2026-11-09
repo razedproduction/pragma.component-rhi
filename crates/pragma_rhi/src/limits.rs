@@ -68,6 +68,8 @@ pub struct Limits {
     pub max_compute_workgroup_size_y: u32,
     /// The largest `z` size of a compute workgroup.
     pub max_compute_workgroup_size_z: u32,
+    /// The largest number of workgroups a dispatch may have in each dimension.
+    pub max_compute_workgroups_per_dimension: u32,
 }
 
 impl Default for Limits {
@@ -100,6 +102,7 @@ impl Default for Limits {
             max_compute_workgroup_size_x: 256,
             max_compute_workgroup_size_y: 256,
             max_compute_workgroup_size_z: 64,
+            max_compute_workgroups_per_dimension: 65535,
         }
     }
 }
@@ -135,6 +138,7 @@ macro_rules! for_each_limit {
             (max_compute_workgroup_size_x, true),
             (max_compute_workgroup_size_y, true),
             (max_compute_workgroup_size_z, true),
+            (max_compute_workgroups_per_dimension, true),
         }
     };
 }

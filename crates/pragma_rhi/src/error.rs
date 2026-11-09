@@ -1,5 +1,6 @@
 //! The crate's error type.
 
+use pragma_core::graph::GraphError;
 use pragma_core::tasks::AsyncError;
 
 use crate::handle::ResourceKind;
@@ -114,10 +115,26 @@ pub enum RhiError {
         /// What does not fit.
         message: String,
     },
+    /// A recorded command breaks a rule; the submission was rejected as a whole and nothing of
+    /// it reached the backend.
+    #[error("{}", command_message(.label.as_deref(), .command, .reason))]
+    #[non_exhaustive]
+    InvalidCommand {
+        /// The label of the command buffer (the frame-graph task that recorded it).
+        label: Option<String>,
+        /// The command, as named by its encoder or pass method (`draw`, `copy_buffer_to_buffer`).
+        command: &'static str,
+        /// The rule that was broken.
+        reason: String,
+    },
     /// A pipeline compilation task did not finish: it was cancelled, it panicked, or the
     /// blocking pool refused it.
     #[error("pipeline compilation task failed: {0}")]
     Task(AsyncError),
+    /// The frame graph of a [`CommandGraph`](crate::CommandGraph) failed to build or to run:
+    /// an unordered access conflict, a cycle, a missing resource, a panicking task.
+    #[error("frame graph: {0}")]
+    Graph(#[from] GraphError),
     /// The backend rejected an operation that passed `pragma_rhi`'s own validation, or failed
     /// to create a device. The message comes from the backend and is not stable.
     #[error("backend error: {message}")]
@@ -149,6 +166,13 @@ impl RhiError {
         Self::Backend {
             message: message.into(),
         }
+    }
+}
+
+fn command_message(label: Option<&str>, command: &str, reason: &str) -> String {
+    match label {
+        Some(label) => format!("invalid command `{command}` in `{label}`: {reason}"),
+        None => format!("invalid command `{command}`: {reason}"),
     }
 }
 

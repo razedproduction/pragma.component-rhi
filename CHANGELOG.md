@@ -4,6 +4,38 @@ The format is [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioni
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-09
+
+### Added
+
+- Command recording and submission (M3): `CommandEncoder` with `copy_buffer_to_buffer`,
+  `clear_buffer`, `copy_buffer_to_texture`, `copy_texture_to_buffer`, `copy_texture_to_texture`,
+  render passes (`RenderPass`: pipelines, bind groups with dynamic offsets, vertex and index
+  buffers, viewport, scissor, `draw`, `draw_indexed`; color attachments with resolve targets, a
+  depth/stencil attachment, load and store operations) and compute passes (`ComputePass`:
+  `dispatch_workgroups`). Recording needs no device and cannot fail (DECISIONS #15).
+- `Device::submit` validates every command of every command buffer before the backend sees any
+  of it: handles, usages, alignments and ranges, attachments, pipeline/attachment and bind group
+  layout compatibility, dynamic offsets, vertex and index ranges of draws, late
+  `min_binding_size` checks, WebGPU usage scopes. A broken rule rejects the whole submission
+  with the new `RhiError::InvalidCommand` (command buffer label, command, reason).
+- `CommandGraph`: recording tasks on a pragma.core frame graph, with resource access declared by
+  type, so conflicting recordings without an order fail at build time
+  (`RhiError::Graph(GraphError::AmbiguousOrder)`); the command buffers come back in the graph's
+  topological order on any number of workers. New `RhiError::Graph`.
+- Queue writes (`Device::write_buffer`) and blocking readback (`Device::read_buffer`,
+  `Device::read_texture`).
+- The null backend keeps buffer and texture contents and executes writes, copies, clears,
+  attachment clears, resolves and discards like a GPU; draws and dispatches change nothing
+  (DECISIONS #16).
+- `Limits::max_compute_workgroups_per_dimension` (WebGPU default 65535).
+- Example `rhi_sim`: the vertical slice on every adapter, with hashes identical on 1 and N
+  workers and transfer hashes identical across backends, the null one included; run in CI on
+  the null backend.
+- Tests: copy, pass, draw and dispatch rules; atomic rejection; stale handles at submission;
+  transfers byte-identical between the null backend and every GPU adapter present (checked on
+  Vulkan, D3D12 and WARP); draws and dispatches on GPUs; recording order on 1, 2 and 4 workers.
+
 ## [0.2.0] - 2026-11-09
 
 ### Added

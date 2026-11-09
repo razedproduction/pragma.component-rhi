@@ -11,7 +11,7 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 | M0 | 0.0.1 | Repository foundation | ✅ |
 | M1 | 0.1.0 | Instance, devices and resources; the null backend | ✅ |
 | M2 | 0.2.0 | Shaders, bind groups, pipelines | ✅ |
-| M3 | 0.3.0 | Command recording on the pragma.core frame graph, vertical slice | 📋 |
+| M3 | 0.3.0 | Command recording on the pragma.core frame graph, vertical slice | ✅ |
 | M4 | 0.4.0 | Surfaces, frames in flight, uploads, deferred destruction | 📋 |
 | M5 | 0.5.0 | Hardening: golden images, fuzz, benches, semver | 📋 |
 | M6 | 1.0.0 | Stable API, publication | 📋 |
@@ -57,15 +57,21 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 - [x] Pipeline compilation off the frame thread on the pragma.core executor's blocking pool
       (`compile_*` → `poll_*` / `wait_*`)
 
-## M3 — Commands and the vertical slice (0.3.0)
+## M3 — Commands and the vertical slice (0.3.0) ✅
 
-- [ ] Command encoders, render and compute passes, copies; recorded in parallel as frame-graph
-      tasks, submitted in a fixed order
-- [ ] Resource access declared per recording task, so conflicting recordings without an order
+- [x] **Decision:** recording is plain data, validated as a whole at submission (DECISIONS #15)
+- [x] **Decision:** the null backend keeps resource contents and executes transfers
+      (DECISIONS #16)
+- [x] Command encoders, render and compute passes, copies; recorded in parallel as frame-graph
+      tasks (`CommandGraph`), submitted in the graph's topological order
+- [x] Resource access declared per recording task, so conflicting recordings without an order
       fail at build time (pragma.core `GraphError::AmbiguousOrder`)
-- [ ] Buffer and texture readback
-- [ ] Example `rhi_sim`: offscreen render + compute, readback, an image hash identical on 1 and N
-      workers and on the null and software backends where they overlap
+- [x] Submission-time validation: handles, usages, alignments and ranges, attachments, pipeline
+      and bind group compatibility, dynamic offsets, draw ranges against vertex and index
+      buffers, late `min_binding_size` checks, usage scopes → `RhiError::InvalidCommand`
+- [x] Queue writes; buffer and texture readback (`read_buffer`, `read_texture`)
+- [x] Example `rhi_sim`: offscreen render + compute, readback, an image hash identical on 1 and N
+      workers and on the null and software backends where they overlap (copies, clears)
 
 ## M4 — Frames (0.4.0)
 

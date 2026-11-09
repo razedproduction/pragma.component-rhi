@@ -676,6 +676,104 @@ impl ComputeKey {
 }
 
 // ---------------------------------------------------------------------------------------------
+// What command validation needs (internal)
+
+/// A buffer binding whose layout leaves the size check to draw time (`min_binding_size:
+/// None`): the bound range must hold at least the shader's `min_size` bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct LateSize {
+    pub(crate) group: u32,
+    pub(crate) binding: u32,
+    pub(crate) min_size: u64,
+}
+
+/// One vertex buffer slot of a render pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct VertexSlot {
+    pub(crate) stride: u64,
+    pub(crate) step: VertexStepMode,
+    /// The end of the slot's last attribute in an element (0 without attributes).
+    pub(crate) last_end: u64,
+}
+
+/// What draws and dispatches are checked against, beyond the pipeline's public info.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub(crate) struct PipelineMeta {
+    pub(crate) late_sizes: Vec<LateSize>,
+    pub(crate) slots: Vec<VertexSlot>,
+    pub(crate) strip_index_format: Option<IndexFormat>,
+}
+
+/// The buffer bindings of `entries` whose layout entry has no `min_binding_size`.
+pub(crate) fn late_sizes(
+    entries: &[&EntryReflection],
+    groups: &[&[BindGroupLayoutEntry]],
+) -> Vec<LateSize> {
+    let mut sizes: Vec<LateSize> = Vec::new();
+    for entry in entries {
+        for binding in &entry.bindings {
+            let min_size = match &binding.ty {
+                ShaderBindingType::Uniform { min_size }
+                | ShaderBindingType::Storage { min_size, .. } => *min_size,
+                _ => continue,
+            };
+            let deferred = usize::try_from(binding.group)
+                .ok()
+                .and_then(|group| groups.get(group))
+                .and_then(|layout| layout.iter().find(|slot| slot.binding == binding.binding))
+                .is_some_and(|slot| {
+                    matches!(
+                        slot.ty,
+                        BindingType::Buffer {
+                            min_binding_size: None,
+                            ..
+                        }
+                    )
+                });
+            if !deferred || min_size == 0 {
+                continue;
+            }
+            match sizes
+                .iter_mut()
+                .find(|late| late.group == binding.group && late.binding == binding.binding)
+            {
+                Some(late) => late.min_size = late.min_size.max(min_size),
+                None => sizes.push(LateSize {
+                    group: binding.group,
+                    binding: binding.binding,
+                    min_size,
+                }),
+            }
+        }
+    }
+    sizes
+}
+
+impl RenderKey {
+    /// The draw-time metadata of a render pipeline compiled from this key.
+    pub(crate) fn meta(&self, late_sizes: Vec<LateSize>) -> PipelineMeta {
+        PipelineMeta {
+            late_sizes,
+            slots: self
+                .buffers
+                .iter()
+                .map(|buffer| VertexSlot {
+                    stride: buffer.array_stride,
+                    step: buffer.step_mode,
+                    last_end: buffer
+                        .attributes
+                        .iter()
+                        .map(|attribute| attribute.offset.saturating_add(attribute.format.size()))
+                        .max()
+                        .unwrap_or(0),
+                })
+                .collect(),
+            strip_index_format: self.primitive.strip_index_format,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Validation
 
 /// A resolved stage: its module's serial and the entry point's reflection.

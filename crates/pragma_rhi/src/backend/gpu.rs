@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::convert;
+use super::{Batch, BufRegion, ComputeOp, Op, RenderOp, TexRegion, convert, wgpu_of};
 use crate::binding::BindGroupLayoutEntry;
 use crate::pipeline::{ComputeKey, RenderKey};
 use crate::{Backend, BufferInfo, Limits, RhiError, SamplerInfo, TextureInfo, TextureViewInfo};
@@ -151,10 +151,6 @@ impl GpuContext {
 
 pub(crate) struct GpuDevice {
     context: GpuContext,
-    #[expect(
-        dead_code,
-        reason = "submission arrives with command recording (roadmap M3)"
-    )]
     queue: wgpu::Queue,
     backend: Backend,
 }
@@ -401,4 +397,253 @@ impl GpuDevice {
         self.context
             .scoped(0, |device| device.create_pipeline_layout(&desc))
     }
+
+    // -- queue ----------------------------------------------------------------------------
+
+    /// Encodes every validated command buffer and submits them in order, inside error scopes.
+    pub(crate) fn execute(&self, batches: &[Batch<'_>]) -> Result<(), RhiError> {
+        self.context.scoped(0, |device| -> Result<(), RhiError> {
+            let mut buffers = Vec::new();
+            buffers
+                .try_reserve_exact(batches.len())
+                .map_err(|_| RhiError::OutOfMemory {
+                    bytes: batches.len() as u64,
+                })?;
+            for batch in batches {
+                let mut encoder = device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: batch.label });
+                for op in &batch.ops {
+                    encode(&mut encoder, op)?;
+                }
+                buffers.push(encoder.finish());
+            }
+            self.queue.submit(buffers);
+            Ok(())
+        })?
+    }
+
+    pub(crate) fn write_buffer(
+        &self,
+        buffer: &wgpu::Buffer,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), RhiError> {
+        self.context.scoped(data.len() as u64, |_| {
+            self.queue.write_buffer(buffer, offset, data);
+        })
+    }
+
+    /// Reads a validated range of a buffer with `MAP_READ` or `COPY_SRC`, after every
+    /// submission so far (and every pending queue write) has finished.
+    pub(crate) fn read_buffer(
+        &self,
+        buffer: &wgpu::Buffer,
+        info: &BufferInfo,
+        offset: u64,
+        size: u64,
+    ) -> Result<Vec<u8>, RhiError> {
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        if info.usage.contains(crate::BufferUsages::MAP_READ) {
+            // Flushes pending queue writes, which run before the next submission.
+            self.context.scoped(0, |_| {
+                self.queue.submit([]);
+            })?;
+            // A mapping starts at a multiple of `MAP_ALIGNMENT` (8); offsets are multiples of 4.
+            let start = offset & !(wgpu::MAP_ALIGNMENT - 1);
+            let skip = offset.saturating_sub(start);
+            let bytes = self.map_read(buffer, start, size.saturating_add(skip))?;
+            let skip = usize::try_from(skip).unwrap_or(0);
+            return Ok(bytes.get(skip..).map(<[u8]>::to_vec).unwrap_or_default());
+        }
+        let staging = self.context.scoped(size, |device| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("pragma_rhi readback"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        })?;
+        let copied = self.context.scoped(0, |device| {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("pragma_rhi readback"),
+            });
+            encoder.copy_buffer_to_buffer(buffer, offset, &staging, 0, Some(size));
+            self.queue.submit([encoder.finish()]);
+        });
+        let bytes = copied.and_then(|()| self.map_read(&staging, 0, size));
+        staging.destroy();
+        bytes
+    }
+
+    /// Maps `size` bytes of a `MAP_READ` buffer at `offset`, waits, copies them out, unmaps.
+    fn map_read(&self, buffer: &wgpu::Buffer, offset: u64, size: u64) -> Result<Vec<u8>, RhiError> {
+        let end = offset.saturating_add(size);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.context.scoped(0, |_| {
+            buffer.map_async(wgpu::MapMode::Read, offset..end, move |result| {
+                // The receiver waits below; a failed send only means it gave up.
+                let _ = sender.send(result);
+            });
+        })?;
+        let polled = self
+            .context
+            .device
+            .poll(wgpu::PollType::wait_indefinitely());
+        if self.is_lost() {
+            return Err(RhiError::DeviceLost);
+        }
+        polled.map_err(|err| RhiError::backend(err.to_string()))?;
+        receiver
+            .recv()
+            .map_err(|_| RhiError::backend("the buffer mapping was dropped"))?
+            .map_err(|err| RhiError::backend(err.to_string()))?;
+        let bytes = buffer
+            .get_mapped_range(offset..end)
+            .map(|view| view.to_vec())
+            .map_err(|err| RhiError::backend(err.to_string()));
+        buffer.unmap();
+        bytes
+    }
+}
+
+fn texture_copy<'a>(region: &TexRegion<'a>) -> Result<wgpu::TexelCopyTextureInfo<'a>, RhiError> {
+    Ok(wgpu::TexelCopyTextureInfo {
+        texture: wgpu_of(region.obj)?,
+        mip_level: region.mip,
+        origin: convert::origin(region.origin),
+        aspect: wgpu::TextureAspect::All,
+    })
+}
+
+fn buffer_copy<'a>(region: &BufRegion<'a>) -> Result<wgpu::TexelCopyBufferInfo<'a>, RhiError> {
+    Ok(wgpu::TexelCopyBufferInfo {
+        buffer: wgpu_of(region.obj)?,
+        layout: convert::buffer_layout(region.layout),
+    })
+}
+
+/// Records one validated command into a wgpu encoder.
+fn encode(encoder: &mut wgpu::CommandEncoder, op: &Op<'_>) -> Result<(), RhiError> {
+    match op {
+        Op::CopyBufferToBuffer {
+            src,
+            src_offset,
+            dst,
+            dst_offset,
+            size,
+        } => encoder.copy_buffer_to_buffer(
+            wgpu_of(src)?,
+            *src_offset,
+            wgpu_of(dst)?,
+            *dst_offset,
+            Some(*size),
+        ),
+        Op::ClearBuffer { obj, offset, size } => {
+            encoder.clear_buffer(wgpu_of(obj)?, *offset, Some(*size));
+        }
+        Op::CopyBufferToTexture { src, dst, size } => encoder.copy_buffer_to_texture(
+            buffer_copy(src)?,
+            texture_copy(dst)?,
+            convert::extent(*size),
+        ),
+        Op::CopyTextureToBuffer { src, dst, size } => encoder.copy_texture_to_buffer(
+            texture_copy(src)?,
+            buffer_copy(dst)?,
+            convert::extent(*size),
+        ),
+        Op::CopyTextureToTexture { src, dst, size } => encoder.copy_texture_to_texture(
+            texture_copy(src)?,
+            texture_copy(dst)?,
+            convert::extent(*size),
+        ),
+        Op::RenderPass(pass) => {
+            let colors = pass
+                .colors
+                .iter()
+                .map(|color| {
+                    color
+                        .as_ref()
+                        .map(|color| {
+                            Ok(wgpu::RenderPassColorAttachment {
+                                view: wgpu_of(color.target.view)?,
+                                depth_slice: None,
+                                resolve_target: color
+                                    .resolve
+                                    .map(|resolve| wgpu_of(resolve.view))
+                                    .transpose()?,
+                                ops: convert::operations(color.ops, convert::color),
+                            })
+                        })
+                        .transpose()
+                })
+                .collect::<Result<Vec<_>, RhiError>>()?;
+            let depth_stencil_attachment = pass
+                .depth
+                .as_ref()
+                .map(|depth| {
+                    Ok::<_, RhiError>(wgpu::RenderPassDepthStencilAttachment {
+                        view: wgpu_of(depth.target.view)?,
+                        depth_ops: depth.depth.map(|ops| convert::operations(ops, |v| v)),
+                        stencil_ops: depth.stencil.map(|ops| convert::operations(ops, |v| v)),
+                    })
+                })
+                .transpose()?;
+            let mut render = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: pass.label,
+                color_attachments: &colors,
+                depth_stencil_attachment,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            for op in &pass.ops {
+                match op {
+                    RenderOp::SetPipeline(pipeline) => render.set_pipeline(wgpu_of(pipeline)?),
+                    RenderOp::SetBindGroup(index, group, offsets) => {
+                        render.set_bind_group(*index, wgpu_of(group)?, offsets);
+                    }
+                    RenderOp::SetVertexBuffer(slot, buffer, offset, size) => render
+                        .set_vertex_buffer(
+                            *slot,
+                            wgpu_of(buffer)?.slice(*offset..offset.saturating_add(*size)),
+                        ),
+                    RenderOp::SetIndexBuffer(buffer, format, offset, size) => render
+                        .set_index_buffer(
+                            wgpu_of(buffer)?.slice(*offset..offset.saturating_add(*size)),
+                            convert::index_format(*format),
+                        ),
+                    RenderOp::SetViewport([x, y, width, height, min, max]) => {
+                        render.set_viewport(*x, *y, *width, *height, *min, *max);
+                    }
+                    RenderOp::SetScissorRect([x, y, width, height]) => {
+                        render.set_scissor_rect(*x, *y, *width, *height);
+                    }
+                    RenderOp::Draw(vertices, instances) => {
+                        render.draw(vertices.clone(), instances.clone());
+                    }
+                    RenderOp::DrawIndexed(indices, base_vertex, instances) => {
+                        render.draw_indexed(indices.clone(), *base_vertex, instances.clone());
+                    }
+                }
+            }
+        }
+        Op::ComputePass(pass) => {
+            let mut compute = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: pass.label,
+                timestamp_writes: None,
+            });
+            for op in &pass.ops {
+                match op {
+                    ComputeOp::SetPipeline(pipeline) => compute.set_pipeline(wgpu_of(pipeline)?),
+                    ComputeOp::SetBindGroup(index, group, offsets) => {
+                        compute.set_bind_group(*index, wgpu_of(group)?, offsets);
+                    }
+                    ComputeOp::Dispatch([x, y, z]) => compute.dispatch_workgroups(*x, *y, *z),
+                }
+            }
+        }
+    }
+    Ok(())
 }

@@ -11,7 +11,9 @@ use core::fmt;
 use pragma_core::tasks::{AsyncError, AsyncHandle};
 
 use crate::backend::{ComputePipelineObj, RenderPipelineObj};
-use crate::pipeline::{ComputeKey, ComputePipelineInfo, RenderKey, RenderPipelineInfo};
+use crate::pipeline::{
+    ComputeKey, ComputePipelineInfo, PipelineMeta, RenderKey, RenderPipelineInfo,
+};
 use crate::{PipelineLayout, RhiError};
 
 enum State<O> {
@@ -138,7 +140,7 @@ impl<K, I, O> fmt::Debug for Pending<K, I, O> {
 #[derive(Debug)]
 #[must_use = "a compiled pipeline is installed only by polling or waiting on it"]
 pub struct PendingRenderPipeline(
-    pub(crate) Pending<RenderKey, RenderPipelineInfo, RenderPipelineObj>,
+    pub(crate) Pending<RenderKey, (RenderPipelineInfo, PipelineMeta), RenderPipelineObj>,
 );
 
 impl PendingRenderPipeline {
@@ -153,7 +155,7 @@ impl PendingRenderPipeline {
 #[derive(Debug)]
 #[must_use = "a compiled pipeline is installed only by polling or waiting on it"]
 pub struct PendingComputePipeline(
-    pub(crate) Pending<ComputeKey, ComputePipelineInfo, ComputePipelineObj>,
+    pub(crate) Pending<ComputeKey, (ComputePipelineInfo, PipelineMeta), ComputePipelineObj>,
 );
 
 impl PendingComputePipeline {

@@ -13,7 +13,13 @@
 //! per device and can be compiled on a pragma.core executor's blocking pool
 //! ([`Device::compile_render_pipeline`]).
 //!
-//! No wgpu type appears in the public API (DECISIONS.md #8). The crate is at milestone M2; see
+//! Commands are recorded into [`CommandEncoder`]s without touching a device — in parallel, as
+//! tasks of a pragma.core frame graph ([`CommandGraph`]) — and checked as a whole by
+//! [`Device::submit`]; [`Device::read_buffer`] and [`Device::read_texture`] read results back.
+//! The null backend executes copies, clears and resolves exactly like a GPU, so readback tests
+//! run without one.
+//!
+//! No wgpu type appears in the public API (DECISIONS.md #8). The crate is at milestone M3; see
 //! `docs/roadmap.md` for what comes next and `docs/architecture.md` for the design.
 //!
 //! ```
@@ -50,8 +56,10 @@
 
 mod backend;
 mod binding;
+mod commands;
 mod device;
 mod error;
+mod graph;
 mod handle;
 mod instance;
 mod limits;
@@ -59,6 +67,7 @@ mod pending;
 mod pipeline;
 mod resource;
 mod shader;
+mod submit;
 
 pub use binding::{
     BindGroupDescriptor, BindGroupEntry, BindGroupInfo, BindGroupLayoutDescriptor,
@@ -66,8 +75,15 @@ pub use binding::{
     BufferBindingType, PipelineLayoutDescriptor, PipelineLayoutInfo, SamplerBindingType,
     StorageTextureAccess, TextureSampleType,
 };
+pub use commands::{
+    COPY_BUFFER_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT, Color, CommandBuffer, CommandEncoder,
+    ComputePass, ComputePassDescriptor, LoadOp, Operations, Origin3d, RenderPass,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp,
+    TexelCopyBufferInfo, TexelCopyBufferLayout, TexelCopyTextureInfo,
+};
 pub use device::{Device, DeviceDescriptor};
 pub use error::RhiError;
+pub use graph::{CommandGraph, CommandGraphBuilder};
 pub use handle::{
     BindGroup, BindGroupLayout, Buffer, ComputePipeline, PipelineLayout, RenderPipeline,
     ResourceKind, Sampler, ShaderModule, Texture, TextureView,

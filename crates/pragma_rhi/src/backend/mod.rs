@@ -1,13 +1,16 @@
 //! The seam between the front end and the backends: an enum, not a trait object
 //! (DECISIONS.md #10). Every operation matches both variants exhaustively.
 //!
-//! The front end has already validated every descriptor when a call gets here.
+//! The front end has already validated every descriptor and every command when a call gets
+//! here; commands arrive resolved to backend objects ([`Op`]).
 
 mod convert;
 mod gpu;
 mod null;
+mod texel;
 
 use core::num::NonZeroU64;
+use core::ops::Range;
 
 pub(crate) use gpu::{GpuDevice, map_backend};
 pub(crate) use null::NullDevice;
@@ -16,7 +19,10 @@ use gpu::{GpuBinding, GpuContext};
 
 use crate::binding::BindGroupLayoutEntry;
 use crate::pipeline::{ComputeKey, RenderKey};
-use crate::{Backend, BufferInfo, RhiError, SamplerInfo, TextureInfo, TextureViewInfo};
+use crate::{
+    Backend, BufferInfo, Color, Extent3d, IndexFormat, Operations, Origin3d, RhiError, SamplerInfo,
+    TexelCopyBufferLayout, TextureInfo, TextureViewInfo,
+};
 
 /// A device of one of the backends.
 #[derive(Debug)]
@@ -27,14 +33,18 @@ pub(crate) enum DeviceBackend {
 
 /// A backend object of a resource. A table entry always holds the variant of its device's
 /// backend, because handles cannot cross devices. Cloning a wgpu object clones a reference.
+/// A null buffer or texture carries the id of its memory in the null device.
 #[derive(Debug, Clone)]
-pub(crate) enum Obj<W> {
+pub(crate) enum Obj<W, N = ()> {
     Wgpu(W),
-    Null,
+    Null(N),
 }
 
-pub(crate) type BufferObj = Obj<wgpu::Buffer>;
-pub(crate) type TextureObj = Obj<wgpu::Texture>;
+/// The id of a null buffer's or texture's memory.
+pub(crate) type NullId = u64;
+
+pub(crate) type BufferObj = Obj<wgpu::Buffer, NullId>;
+pub(crate) type TextureObj = Obj<wgpu::Texture, NullId>;
 pub(crate) type TextureViewObj = Obj<wgpu::TextureView>;
 pub(crate) type SamplerObj = Obj<wgpu::Sampler>;
 pub(crate) type ShaderModuleObj = Obj<wgpu::ShaderModule>;
@@ -44,13 +54,23 @@ pub(crate) type PipelineLayoutObj = Obj<wgpu::PipelineLayout>;
 pub(crate) type RenderPipelineObj = Obj<wgpu::RenderPipeline>;
 pub(crate) type ComputePipelineObj = Obj<wgpu::ComputePipeline>;
 
+fn wrong_backend() -> RhiError {
+    RhiError::backend("a resource of another backend reached this device")
+}
+
 /// The wgpu object of a resource of a wgpu device.
-fn wgpu_of<W>(obj: &Obj<W>) -> Result<&W, RhiError> {
+fn wgpu_of<W, N>(obj: &Obj<W, N>) -> Result<&W, RhiError> {
     match obj {
         Obj::Wgpu(object) => Ok(object),
-        Obj::Null => Err(RhiError::backend(
-            "a resource of another backend reached this device",
-        )),
+        Obj::Null(_) => Err(wrong_backend()),
+    }
+}
+
+/// The memory id of a buffer or texture of a null device.
+fn null_of<W>(obj: &Obj<W, NullId>) -> Result<NullId, RhiError> {
+    match obj {
+        Obj::Null(id) => Ok(*id),
+        Obj::Wgpu(_) => Err(wrong_backend()),
     }
 }
 
@@ -64,6 +84,125 @@ pub(crate) enum BoundObj<'a> {
     Sampler(&'a SamplerObj),
     TextureView(&'a TextureViewObj),
 }
+
+// ---------------------------------------------------------------------------------------------
+// Resolved commands
+
+/// A texture region of a copy: one mip level from `origin`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TexRegion<'a> {
+    pub(crate) obj: &'a TextureObj,
+    pub(crate) info: &'a TextureInfo,
+    pub(crate) mip: u32,
+    pub(crate) origin: Origin3d,
+}
+
+/// A buffer side of a texture copy: the layout as recorded (for wgpu) and with every default
+/// resolved (for the null backend).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BufRegion<'a> {
+    pub(crate) obj: &'a BufferObj,
+    pub(crate) layout: TexelCopyBufferLayout,
+    pub(crate) bytes_per_row: u64,
+    pub(crate) rows_per_image: u64,
+}
+
+/// One mip level of one layer of a texture, through a view: what an attachment covers.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Subresource<'a> {
+    pub(crate) view: &'a TextureViewObj,
+    pub(crate) texture: &'a TextureObj,
+    pub(crate) info: &'a TextureInfo,
+    pub(crate) mip: u32,
+    pub(crate) layer: u32,
+}
+
+pub(crate) struct ColorOp<'a> {
+    pub(crate) target: Subresource<'a>,
+    pub(crate) resolve: Option<Subresource<'a>>,
+    pub(crate) ops: Operations<Color>,
+}
+
+pub(crate) struct DepthOp<'a> {
+    pub(crate) target: Subresource<'a>,
+    pub(crate) depth: Option<Operations<f32>>,
+    pub(crate) stencil: Option<Operations<u32>>,
+}
+
+pub(crate) enum RenderOp<'a> {
+    SetPipeline(&'a RenderPipelineObj),
+    SetBindGroup(u32, &'a BindGroupObj, &'a [u32]),
+    /// Slot, buffer, offset, size.
+    SetVertexBuffer(u32, &'a BufferObj, u64, u64),
+    /// Buffer, format, offset, size.
+    SetIndexBuffer(&'a BufferObj, IndexFormat, u64, u64),
+    /// x, y, width, height, min depth, max depth.
+    SetViewport([f32; 6]),
+    /// x, y, width, height.
+    SetScissorRect([u32; 4]),
+    Draw(Range<u32>, Range<u32>),
+    DrawIndexed(Range<u32>, i32, Range<u32>),
+}
+
+pub(crate) enum ComputeOp<'a> {
+    SetPipeline(&'a ComputePipelineObj),
+    SetBindGroup(u32, &'a BindGroupObj, &'a [u32]),
+    Dispatch([u32; 3]),
+}
+
+pub(crate) struct RenderPassOp<'a> {
+    pub(crate) label: Option<&'a str>,
+    pub(crate) colors: Vec<Option<ColorOp<'a>>>,
+    pub(crate) depth: Option<DepthOp<'a>>,
+    pub(crate) ops: Vec<RenderOp<'a>>,
+}
+
+pub(crate) struct ComputePassOp<'a> {
+    pub(crate) label: Option<&'a str>,
+    pub(crate) ops: Vec<ComputeOp<'a>>,
+}
+
+/// A validated command, resolved to backend objects.
+pub(crate) enum Op<'a> {
+    CopyBufferToBuffer {
+        src: &'a BufferObj,
+        src_offset: u64,
+        dst: &'a BufferObj,
+        dst_offset: u64,
+        size: u64,
+    },
+    ClearBuffer {
+        obj: &'a BufferObj,
+        offset: u64,
+        size: u64,
+    },
+    CopyBufferToTexture {
+        src: BufRegion<'a>,
+        dst: TexRegion<'a>,
+        size: Extent3d,
+    },
+    CopyTextureToBuffer {
+        src: TexRegion<'a>,
+        dst: BufRegion<'a>,
+        size: Extent3d,
+    },
+    CopyTextureToTexture {
+        src: TexRegion<'a>,
+        dst: TexRegion<'a>,
+        size: Extent3d,
+    },
+    RenderPass(RenderPassOp<'a>),
+    ComputePass(ComputePassOp<'a>),
+}
+
+/// One validated command buffer.
+pub(crate) struct Batch<'a> {
+    pub(crate) label: Option<&'a str>,
+    pub(crate) ops: Vec<Op<'a>>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pipeline jobs
 
 /// A pipeline compilation detached from the device: `Send + 'static`, so it can run on a
 /// blocking-pool thread or inline.
@@ -96,7 +235,7 @@ impl RenderJob {
             } => context
                 .compile_render(label.as_deref(), &layout, &vertex, fragment.as_ref(), &key)
                 .map(Obj::Wgpu),
-            Self::Null => Ok(Obj::Null),
+            Self::Null => Ok(Obj::Null(())),
         }
     }
 }
@@ -125,10 +264,13 @@ impl ComputeJob {
             } => context
                 .compile_compute(label.as_deref(), &layout, &module, &key)
                 .map(Obj::Wgpu),
-            Self::Null => Ok(Obj::Null),
+            Self::Null => Ok(Obj::Null(())),
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Device operations
 
 impl DeviceBackend {
     pub(crate) const fn backend(&self) -> Backend {
@@ -167,15 +309,15 @@ impl DeviceBackend {
     ) -> Result<BufferObj, RhiError> {
         match self {
             Self::Wgpu(device) => device.create_buffer(label, info).map(Obj::Wgpu),
-            Self::Null(device) => device.allocate(info.size).map(|()| Obj::Null),
+            Self::Null(device) => device.allocate(info.size).map(Obj::Null),
         }
     }
 
     pub(crate) fn destroy_buffer(&mut self, obj: BufferObj, info: &BufferInfo) {
         match (self, obj) {
             (Self::Wgpu(_), Obj::Wgpu(buffer)) => buffer.destroy(),
-            (Self::Null(device), _) => device.release(info.size),
-            (Self::Wgpu(_), Obj::Null) => {}
+            (Self::Null(device), Obj::Null(id)) => device.release(id, info.size),
+            (Self::Wgpu(_), Obj::Null(_)) | (Self::Null(_), Obj::Wgpu(_)) => {}
         }
     }
 
@@ -187,15 +329,15 @@ impl DeviceBackend {
     ) -> Result<TextureObj, RhiError> {
         match self {
             Self::Wgpu(device) => device.create_texture(label, info, bytes).map(Obj::Wgpu),
-            Self::Null(device) => device.allocate(bytes).map(|()| Obj::Null),
+            Self::Null(device) => device.allocate(bytes).map(Obj::Null),
         }
     }
 
     pub(crate) fn destroy_texture(&mut self, obj: TextureObj, bytes: u64) {
         match (self, obj) {
             (Self::Wgpu(_), Obj::Wgpu(texture)) => texture.destroy(),
-            (Self::Null(device), _) => device.release(bytes),
-            (Self::Wgpu(_), Obj::Null) => {}
+            (Self::Null(device), Obj::Null(id)) => device.release(id, bytes),
+            (Self::Wgpu(_), Obj::Null(_)) | (Self::Null(_), Obj::Wgpu(_)) => {}
         }
     }
 
@@ -209,7 +351,7 @@ impl DeviceBackend {
             Self::Wgpu(device) => device
                 .create_texture_view(label, wgpu_of(texture)?, info)
                 .map(Obj::Wgpu),
-            Self::Null(_) => Ok(Obj::Null),
+            Self::Null(_) => Ok(Obj::Null(())),
         }
     }
 
@@ -220,7 +362,7 @@ impl DeviceBackend {
     ) -> Result<SamplerObj, RhiError> {
         match self {
             Self::Wgpu(device) => device.create_sampler(label, info).map(Obj::Wgpu),
-            Self::Null(_) => Ok(Obj::Null),
+            Self::Null(_) => Ok(Obj::Null(())),
         }
     }
 
@@ -231,7 +373,7 @@ impl DeviceBackend {
     ) -> Result<ShaderModuleObj, RhiError> {
         match self {
             Self::Wgpu(device) => device.create_shader_module(label, module).map(Obj::Wgpu),
-            Self::Null(_) => Ok(Obj::Null),
+            Self::Null(_) => Ok(Obj::Null(())),
         }
     }
 
@@ -244,7 +386,7 @@ impl DeviceBackend {
             Self::Wgpu(device) => device
                 .create_bind_group_layout(label, entries)
                 .map(Obj::Wgpu),
-            Self::Null(_) => Ok(Obj::Null),
+            Self::Null(_) => Ok(Obj::Null(())),
         }
     }
 
@@ -275,7 +417,7 @@ impl DeviceBackend {
                     .create_bind_group(label, wgpu_of(layout)?, &entries)
                     .map(Obj::Wgpu)
             }
-            Self::Null(_) => Ok(Obj::Null),
+            Self::Null(_) => Ok(Obj::Null(())),
         }
     }
 
@@ -292,7 +434,7 @@ impl DeviceBackend {
                     .collect::<Result<Vec<_>, RhiError>>()?;
                 device.create_pipeline_layout(label, &groups).map(Obj::Wgpu)
             }
-            Self::Null(_) => Ok(Obj::Null),
+            Self::Null(_) => Ok(Obj::Null(())),
         }
     }
 
@@ -333,6 +475,43 @@ impl DeviceBackend {
                 key: key.clone(),
             }),
             Self::Null(_) => Ok(ComputeJob::Null),
+        }
+    }
+
+    // -- queue ----------------------------------------------------------------------------
+
+    /// Runs validated command buffers, in order, as one submission.
+    pub(crate) fn execute(&mut self, batches: &[Batch<'_>]) -> Result<(), RhiError> {
+        match self {
+            Self::Wgpu(device) => device.execute(batches),
+            Self::Null(device) => device.execute(batches),
+        }
+    }
+
+    /// Writes `data` into a buffer before the commands of the next submission run.
+    pub(crate) fn write_buffer(
+        &mut self,
+        obj: &BufferObj,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), RhiError> {
+        match self {
+            Self::Wgpu(device) => device.write_buffer(wgpu_of(obj)?, offset, data),
+            Self::Null(device) => device.write(null_of(obj)?, offset, data),
+        }
+    }
+
+    /// Waits for every submission and reads a validated range of a buffer.
+    pub(crate) fn read_buffer(
+        &mut self,
+        obj: &BufferObj,
+        info: &BufferInfo,
+        offset: u64,
+        size: u64,
+    ) -> Result<Vec<u8>, RhiError> {
+        match self {
+            Self::Wgpu(device) => device.read_buffer(wgpu_of(obj)?, info, offset, size),
+            Self::Null(device) => device.read(null_of(obj)?, offset, size),
         }
     }
 }
