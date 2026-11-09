@@ -2,90 +2,30 @@
 //!
 //! wgpu reports most failures asynchronously, through error scopes; every creation runs inside
 //! an out-of-memory and a validation scope and turns what they caught into an [`RhiError`]. The
-//! uncaptured-error handler is replaced, because wgpu's default one panics.
+//! uncaptured-error handler is replaced, because wgpu's default one panics. Error scopes are
+//! per thread in wgpu, so a pipeline compiled on a blocking-pool thread gets its own scopes
+//! there.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{
-    AddressMode, Backend, BufferInfo, BufferUsages, CompareFunction, FilterMode, Limits, RhiError,
-    SamplerInfo, TextureAspect, TextureDimension, TextureFormat, TextureInfo, TextureUsages,
-    TextureViewDimension, TextureViewInfo,
-};
+use super::convert;
+use crate::binding::BindGroupLayoutEntry;
+use crate::pipeline::{ComputeKey, RenderKey};
+use crate::{Backend, BufferInfo, Limits, RhiError, SamplerInfo, TextureInfo, TextureViewInfo};
 
-pub(crate) struct GpuDevice {
+/// What a creation on any thread needs: the device and its loss flag. Cheap to clone (wgpu's
+/// device is reference-counted), `Send` and `Sync`.
+#[derive(Clone)]
+pub(crate) struct GpuContext {
     device: wgpu::Device,
-    #[expect(
-        dead_code,
-        reason = "submission arrives with command recording (roadmap M3)"
-    )]
-    queue: wgpu::Queue,
-    backend: Backend,
     lost: Arc<AtomicBool>,
 }
 
-impl core::fmt::Debug for GpuDevice {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("GpuDevice")
-            .field("backend", &self.backend)
-            .field("lost", &self.is_lost())
-            .finish_non_exhaustive()
-    }
-}
-
-/// Maps a wgpu backend to ours; `None` for backends this crate does not enable.
-pub(crate) fn map_backend(backend: wgpu::Backend) -> Option<Backend> {
-    match backend {
-        wgpu::Backend::Vulkan => Some(Backend::Vulkan),
-        wgpu::Backend::Dx12 => Some(Backend::Dx12),
-        _ => None,
-    }
-}
-
-impl GpuDevice {
-    pub(crate) fn request(
-        adapter: &wgpu::Adapter,
-        backend: Backend,
-        label: Option<&str>,
-        limits: &Limits,
-    ) -> Result<Self, RhiError> {
-        // The adapter's own limits are always requestable; ours narrow the ones we validate.
-        let mut required_limits = adapter.limits();
-        limits.apply_to_wgpu(&mut required_limits);
-        let desc = wgpu::DeviceDescriptor {
-            label,
-            required_limits,
-            ..wgpu::DeviceDescriptor::default()
-        };
-        let (device, queue) = pollster::block_on(adapter.request_device(&desc))
-            .map_err(|err| RhiError::backend(err.to_string()))?;
-        let lost = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&lost);
-        device.set_device_lost_callback(move |_reason, _message| {
-            flag.store(true, Ordering::Release);
-        });
-        // Every operation runs in error scopes; anything that still escapes is dropped instead
-        // of hitting wgpu's default handler, which panics.
-        device.on_uncaptured_error(Arc::new(|_error: wgpu::Error| {}));
-        Ok(Self {
-            device,
-            queue,
-            backend,
-            lost,
-        })
-    }
-
-    pub(crate) const fn backend(&self) -> Backend {
-        self.backend
-    }
-
+impl GpuContext {
     pub(crate) fn is_lost(&self) -> bool {
         self.lost.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn lose(&mut self) {
-        self.device.destroy();
-        self.lost.store(true, Ordering::Release);
     }
 
     /// Runs `create` inside error scopes and maps what they caught.
@@ -114,6 +54,189 @@ impl GpuDevice {
         }
     }
 
+    /// Compiles a render pipeline from its validated cache key.
+    pub(crate) fn compile_render(
+        &self,
+        label: Option<&str>,
+        layout: &wgpu::PipelineLayout,
+        vertex: &wgpu::ShaderModule,
+        fragment: Option<&wgpu::ShaderModule>,
+        key: &RenderKey,
+    ) -> Result<wgpu::RenderPipeline, RhiError> {
+        let attributes: Vec<Vec<wgpu::VertexAttribute>> = key
+            .buffers
+            .iter()
+            .map(|buffer| {
+                buffer
+                    .attributes
+                    .iter()
+                    .map(|attribute| wgpu::VertexAttribute {
+                        format: convert::vertex_format(attribute.format),
+                        offset: attribute.offset,
+                        shader_location: attribute.shader_location,
+                    })
+                    .collect()
+            })
+            .collect();
+        let buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = key
+            .buffers
+            .iter()
+            .zip(&attributes)
+            .map(|(buffer, attributes)| {
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: buffer.array_stride,
+                    step_mode: convert::step_mode(buffer.step_mode),
+                    attributes,
+                })
+            })
+            .collect();
+        let targets: Vec<Option<wgpu::ColorTargetState>> = key
+            .fragment
+            .as_ref()
+            .map(|fragment| {
+                fragment
+                    .targets
+                    .iter()
+                    .map(|target| target.as_ref().map(convert::color_target))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fragment_state = match (fragment, &key.fragment) {
+            (Some(module), Some(fragment)) => Some(wgpu::FragmentState {
+                module,
+                entry_point: Some(&fragment.stage.entry_point),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &targets,
+            }),
+            _ => None,
+        };
+        let desc = wgpu::RenderPipelineDescriptor {
+            label,
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: vertex,
+                entry_point: Some(&key.vertex.entry_point),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &buffers,
+            },
+            primitive: convert::primitive(&key.primitive),
+            depth_stencil: key.depth_stencil.as_ref().map(convert::depth_stencil),
+            multisample: convert::multisample(&key.multisample),
+            fragment: fragment_state,
+            multiview_mask: None,
+            cache: None,
+        };
+        self.scoped(0, |device| device.create_render_pipeline(&desc))
+    }
+
+    /// Compiles a compute pipeline from its validated cache key.
+    pub(crate) fn compile_compute(
+        &self,
+        label: Option<&str>,
+        layout: &wgpu::PipelineLayout,
+        module: &wgpu::ShaderModule,
+        key: &ComputeKey,
+    ) -> Result<wgpu::ComputePipeline, RhiError> {
+        let desc = wgpu::ComputePipelineDescriptor {
+            label,
+            layout: Some(layout),
+            module,
+            entry_point: Some(&key.stage.entry_point),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        };
+        self.scoped(0, |device| device.create_compute_pipeline(&desc))
+    }
+}
+
+pub(crate) struct GpuDevice {
+    context: GpuContext,
+    #[expect(
+        dead_code,
+        reason = "submission arrives with command recording (roadmap M3)"
+    )]
+    queue: wgpu::Queue,
+    backend: Backend,
+}
+
+impl core::fmt::Debug for GpuDevice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GpuDevice")
+            .field("backend", &self.backend)
+            .field("lost", &self.is_lost())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Maps a wgpu backend to ours; `None` for backends this crate does not enable.
+pub(crate) fn map_backend(backend: wgpu::Backend) -> Option<Backend> {
+    match backend {
+        wgpu::Backend::Vulkan => Some(Backend::Vulkan),
+        wgpu::Backend::Dx12 => Some(Backend::Dx12),
+        _ => None,
+    }
+}
+
+/// A resource bound to a bind group entry, resolved to its wgpu object.
+pub(crate) enum GpuBinding<'a> {
+    Buffer {
+        buffer: &'a wgpu::Buffer,
+        offset: u64,
+        size: core::num::NonZeroU64,
+    },
+    Sampler(&'a wgpu::Sampler),
+    TextureView(&'a wgpu::TextureView),
+}
+
+impl GpuDevice {
+    pub(crate) fn request(
+        adapter: &wgpu::Adapter,
+        backend: Backend,
+        label: Option<&str>,
+        limits: &Limits,
+    ) -> Result<Self, RhiError> {
+        // The adapter's own limits are always requestable; ours narrow the ones we validate.
+        let mut required_limits = adapter.limits();
+        limits.apply_to_wgpu(&mut required_limits);
+        let desc = wgpu::DeviceDescriptor {
+            label,
+            required_limits,
+            ..wgpu::DeviceDescriptor::default()
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&desc))
+            .map_err(|err| RhiError::backend(err.to_string()))?;
+        let lost = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&lost);
+        device.set_device_lost_callback(move |_reason, _message| {
+            flag.store(true, Ordering::Release);
+        });
+        // Every operation runs in error scopes; anything that still escapes is dropped instead
+        // of hitting wgpu's default handler, which panics.
+        device.on_uncaptured_error(Arc::new(|_error: wgpu::Error| {}));
+        Ok(Self {
+            context: GpuContext { device, lost },
+            queue,
+            backend,
+        })
+    }
+
+    pub(crate) const fn backend(&self) -> Backend {
+        self.backend
+    }
+
+    pub(crate) const fn context(&self) -> &GpuContext {
+        &self.context
+    }
+
+    pub(crate) fn is_lost(&self) -> bool {
+        self.context.is_lost()
+    }
+
+    pub(crate) fn lose(&mut self) {
+        self.context.device.destroy();
+        self.context.lost.store(true, Ordering::Release);
+    }
+
     pub(crate) fn create_buffer(
         &self,
         label: Option<&str>,
@@ -122,10 +245,11 @@ impl GpuDevice {
         let desc = wgpu::BufferDescriptor {
             label,
             size: info.size,
-            usage: buffer_usages(info.usage),
+            usage: convert::buffer_usages(info.usage),
             mapped_at_creation: false,
         };
-        self.scoped(info.size, |device| device.create_buffer(&desc))
+        self.context
+            .scoped(info.size, |device| device.create_buffer(&desc))
     }
 
     pub(crate) fn create_texture(
@@ -143,16 +267,13 @@ impl GpuDevice {
             },
             mip_level_count: info.mip_level_count,
             sample_count: info.sample_count,
-            dimension: match info.dimension {
-                TextureDimension::D1 => wgpu::TextureDimension::D1,
-                TextureDimension::D2 => wgpu::TextureDimension::D2,
-                TextureDimension::D3 => wgpu::TextureDimension::D3,
-            },
-            format: texture_format(info.format),
-            usage: texture_usages(info.usage),
+            dimension: convert::texture_dimension(info.dimension),
+            format: convert::texture_format(info.format),
+            usage: convert::texture_usages(info.usage),
             view_formats: &[],
         };
-        self.scoped(bytes, |device| device.create_texture(&desc))
+        self.context
+            .scoped(bytes, |device| device.create_texture(&desc))
     }
 
     pub(crate) fn create_texture_view(
@@ -163,27 +284,16 @@ impl GpuDevice {
     ) -> Result<wgpu::TextureView, RhiError> {
         let desc = wgpu::TextureViewDescriptor {
             label,
-            format: Some(texture_format(info.format)),
-            dimension: Some(match info.dimension {
-                TextureViewDimension::D1 => wgpu::TextureViewDimension::D1,
-                TextureViewDimension::D2 => wgpu::TextureViewDimension::D2,
-                TextureViewDimension::D2Array => wgpu::TextureViewDimension::D2Array,
-                TextureViewDimension::Cube => wgpu::TextureViewDimension::Cube,
-                TextureViewDimension::CubeArray => wgpu::TextureViewDimension::CubeArray,
-                TextureViewDimension::D3 => wgpu::TextureViewDimension::D3,
-            }),
+            format: Some(convert::texture_format(info.format)),
+            dimension: Some(convert::view_dimension(info.dimension)),
             usage: None,
-            aspect: match info.aspect {
-                TextureAspect::All => wgpu::TextureAspect::All,
-                TextureAspect::DepthOnly => wgpu::TextureAspect::DepthOnly,
-                TextureAspect::StencilOnly => wgpu::TextureAspect::StencilOnly,
-            },
+            aspect: convert::texture_aspect(info.aspect),
             base_mip_level: info.base_mip_level,
             mip_level_count: Some(info.mip_level_count),
             base_array_layer: info.base_array_layer,
             array_layer_count: Some(info.array_layer_count),
         };
-        self.scoped(0, |_| texture.create_view(&desc))
+        self.context.scoped(0, |_| texture.create_view(&desc))
     }
 
     pub(crate) fn create_sampler(
@@ -195,134 +305,100 @@ impl GpuDevice {
         let [lod_min_clamp, lod_max_clamp] = info.lod_clamp;
         let desc = wgpu::SamplerDescriptor {
             label,
-            address_mode_u: address_mode(u),
-            address_mode_v: address_mode(v),
-            address_mode_w: address_mode(w),
-            mag_filter: filter_mode(info.mag_filter),
-            min_filter: filter_mode(info.min_filter),
-            mipmap_filter: match info.mipmap_filter {
-                FilterMode::Nearest => wgpu::MipmapFilterMode::Nearest,
-                FilterMode::Linear => wgpu::MipmapFilterMode::Linear,
-            },
+            address_mode_u: convert::address_mode(u),
+            address_mode_v: convert::address_mode(v),
+            address_mode_w: convert::address_mode(w),
+            mag_filter: convert::filter_mode(info.mag_filter),
+            min_filter: convert::filter_mode(info.min_filter),
+            mipmap_filter: convert::mipmap_filter_mode(info.mipmap_filter),
             lod_min_clamp,
             lod_max_clamp,
-            compare: info.compare.map(compare_function),
+            compare: info.compare.map(convert::compare_function),
             anisotropy_clamp: info.anisotropy_clamp,
             border_color: None,
         };
-        self.scoped(0, |device| device.create_sampler(&desc))
+        self.context
+            .scoped(0, |device| device.create_sampler(&desc))
     }
-}
 
-fn buffer_usages(usage: BufferUsages) -> wgpu::BufferUsages {
-    let pairs = [
-        (BufferUsages::MAP_READ, wgpu::BufferUsages::MAP_READ),
-        (BufferUsages::MAP_WRITE, wgpu::BufferUsages::MAP_WRITE),
-        (BufferUsages::COPY_SRC, wgpu::BufferUsages::COPY_SRC),
-        (BufferUsages::COPY_DST, wgpu::BufferUsages::COPY_DST),
-        (BufferUsages::INDEX, wgpu::BufferUsages::INDEX),
-        (BufferUsages::VERTEX, wgpu::BufferUsages::VERTEX),
-        (BufferUsages::UNIFORM, wgpu::BufferUsages::UNIFORM),
-        (BufferUsages::STORAGE, wgpu::BufferUsages::STORAGE),
-        (BufferUsages::INDIRECT, wgpu::BufferUsages::INDIRECT),
-    ];
-    pairs
-        .into_iter()
-        .filter(|(ours, _)| usage.contains(*ours))
-        .fold(wgpu::BufferUsages::empty(), |acc, (_, theirs)| acc | theirs)
-}
-
-fn texture_usages(usage: TextureUsages) -> wgpu::TextureUsages {
-    let pairs = [
-        (TextureUsages::COPY_SRC, wgpu::TextureUsages::COPY_SRC),
-        (TextureUsages::COPY_DST, wgpu::TextureUsages::COPY_DST),
-        (
-            TextureUsages::TEXTURE_BINDING,
-            wgpu::TextureUsages::TEXTURE_BINDING,
-        ),
-        (
-            TextureUsages::STORAGE_BINDING,
-            wgpu::TextureUsages::STORAGE_BINDING,
-        ),
-        (
-            TextureUsages::RENDER_ATTACHMENT,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
-        ),
-    ];
-    pairs
-        .into_iter()
-        .filter(|(ours, _)| usage.contains(*ours))
-        .fold(wgpu::TextureUsages::empty(), |acc, (_, theirs)| {
-            acc | theirs
-        })
-}
-
-const fn texture_format(format: TextureFormat) -> wgpu::TextureFormat {
-    match format {
-        TextureFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
-        TextureFormat::Rg8Unorm => wgpu::TextureFormat::Rg8Unorm,
-        TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
-        TextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-        TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
-        TextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8UnormSrgb,
-        TextureFormat::R16Float => wgpu::TextureFormat::R16Float,
-        TextureFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
-        TextureFormat::R32Float => wgpu::TextureFormat::R32Float,
-        TextureFormat::Rg32Float => wgpu::TextureFormat::Rg32Float,
-        TextureFormat::Rgba32Float => wgpu::TextureFormat::Rgba32Float,
-        TextureFormat::R32Uint => wgpu::TextureFormat::R32Uint,
-        TextureFormat::Depth32Float => wgpu::TextureFormat::Depth32Float,
-        TextureFormat::Depth24Plus => wgpu::TextureFormat::Depth24Plus,
-        TextureFormat::Depth24PlusStencil8 => wgpu::TextureFormat::Depth24PlusStencil8,
+    /// Hands a module naga has already validated to wgpu as IR (DECISIONS.md #13).
+    pub(crate) fn create_shader_module(
+        &self,
+        label: Option<&str>,
+        module: &naga::Module,
+    ) -> Result<wgpu::ShaderModule, RhiError> {
+        let desc = wgpu::ShaderModuleDescriptor {
+            label,
+            source: wgpu::ShaderSource::Naga(Cow::Owned(module.clone())),
+        };
+        self.context
+            .scoped(0, |device| device.create_shader_module(desc))
     }
-}
 
-const fn address_mode(mode: AddressMode) -> wgpu::AddressMode {
-    match mode {
-        AddressMode::ClampToEdge => wgpu::AddressMode::ClampToEdge,
-        AddressMode::Repeat => wgpu::AddressMode::Repeat,
-        AddressMode::MirrorRepeat => wgpu::AddressMode::MirrorRepeat,
+    pub(crate) fn create_bind_group_layout(
+        &self,
+        label: Option<&str>,
+        entries: &[BindGroupLayoutEntry],
+    ) -> Result<wgpu::BindGroupLayout, RhiError> {
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = entries
+            .iter()
+            .map(convert::bind_group_layout_entry)
+            .collect();
+        let desc = wgpu::BindGroupLayoutDescriptor {
+            label,
+            entries: &entries,
+        };
+        self.context
+            .scoped(0, |device| device.create_bind_group_layout(&desc))
     }
-}
 
-const fn filter_mode(mode: FilterMode) -> wgpu::FilterMode {
-    match mode {
-        FilterMode::Nearest => wgpu::FilterMode::Nearest,
-        FilterMode::Linear => wgpu::FilterMode::Linear,
+    pub(crate) fn create_bind_group(
+        &self,
+        label: Option<&str>,
+        layout: &wgpu::BindGroupLayout,
+        entries: &[(u32, GpuBinding<'_>)],
+    ) -> Result<wgpu::BindGroup, RhiError> {
+        let entries: Vec<wgpu::BindGroupEntry<'_>> = entries
+            .iter()
+            .map(|(binding, resource)| wgpu::BindGroupEntry {
+                binding: *binding,
+                resource: match *resource {
+                    GpuBinding::Buffer {
+                        buffer,
+                        offset,
+                        size,
+                    } => wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer,
+                        offset,
+                        size: Some(size),
+                    }),
+                    GpuBinding::Sampler(sampler) => wgpu::BindingResource::Sampler(sampler),
+                    GpuBinding::TextureView(view) => wgpu::BindingResource::TextureView(view),
+                },
+            })
+            .collect();
+        let desc = wgpu::BindGroupDescriptor {
+            label,
+            layout,
+            entries: &entries,
+        };
+        self.context
+            .scoped(0, |device| device.create_bind_group(&desc))
     }
-}
 
-const fn compare_function(compare: CompareFunction) -> wgpu::CompareFunction {
-    match compare {
-        CompareFunction::Never => wgpu::CompareFunction::Never,
-        CompareFunction::Less => wgpu::CompareFunction::Less,
-        CompareFunction::Equal => wgpu::CompareFunction::Equal,
-        CompareFunction::LessEqual => wgpu::CompareFunction::LessEqual,
-        CompareFunction::Greater => wgpu::CompareFunction::Greater,
-        CompareFunction::NotEqual => wgpu::CompareFunction::NotEqual,
-        CompareFunction::GreaterEqual => wgpu::CompareFunction::GreaterEqual,
-        CompareFunction::Always => wgpu::CompareFunction::Always,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{buffer_usages, texture_usages};
-    use crate::{BufferUsages, TextureUsages};
-
-    #[test]
-    fn usages_map_bit_for_bit() {
-        assert_eq!(
-            buffer_usages(BufferUsages::all()).bits().count_ones(),
-            BufferUsages::all().bits().count_ones()
-        );
-        assert_eq!(
-            texture_usages(TextureUsages::all()).bits().count_ones(),
-            TextureUsages::all().bits().count_ones()
-        );
-        assert_eq!(
-            buffer_usages(BufferUsages::MAP_READ | BufferUsages::COPY_DST),
-            wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST
-        );
+    pub(crate) fn create_pipeline_layout(
+        &self,
+        label: Option<&str>,
+        groups: &[&wgpu::BindGroupLayout],
+    ) -> Result<wgpu::PipelineLayout, RhiError> {
+        let groups: Vec<Option<&wgpu::BindGroupLayout>> =
+            groups.iter().copied().map(Some).collect();
+        let desc = wgpu::PipelineLayoutDescriptor {
+            label,
+            bind_group_layouts: &groups,
+            immediate_size: 0,
+        };
+        self.context
+            .scoped(0, |device| device.create_pipeline_layout(&desc))
     }
 }

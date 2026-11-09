@@ -15,9 +15,10 @@ types; a null backend runs everything except pixels without a GPU.
 
 ## Status
 
-**M1 (0.1.0) — instance, devices, resources.** Adapters of Vulkan, D3D12 and the null backend;
-devices; buffers, textures, views and samplers with validated descriptors and generational
-handles. Shaders and pipelines come next (M2). See the [roadmap](docs/roadmap.md) and the
+**M2 (0.2.0) — shaders and pipelines.** Adapters of Vulkan, D3D12 and the null backend;
+devices; buffers, textures, views and samplers; shader modules validated by naga on every
+backend; bind groups, pipeline layouts, render and compute pipelines with a pipeline cache and
+compilation on pragma.core's async pool. Command recording on the frame graph comes next (M3). See the [roadmap](docs/roadmap.md) and the
 [architecture](docs/architecture.md).
 
 ## Building

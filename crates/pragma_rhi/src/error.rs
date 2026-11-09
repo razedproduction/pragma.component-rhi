@@ -1,6 +1,9 @@
 //! The crate's error type.
 
+use pragma_core::tasks::AsyncError;
+
 use crate::handle::ResourceKind;
+use crate::shader::{ShaderStage, SourceLocation};
 
 /// An error of an RHI operation.
 ///
@@ -66,8 +69,22 @@ pub enum RhiError {
         /// The largest allowed value.
         max: u64,
     },
-    /// The resource cannot be destroyed while other resources depend on it (a texture with
-    /// live views).
+    /// A requested alignment is smaller than the adapter's minimum or not a power of two.
+    #[error(
+        "limit `{limit}` is invalid: requested {requested}, it must be a power of two and at least {min}"
+    )]
+    #[non_exhaustive]
+    LimitBelowMinimum {
+        /// The name of the limit, a field of [`Limits`](crate::Limits).
+        limit: &'static str,
+        /// The requested value.
+        requested: u64,
+        /// The smallest allowed value.
+        min: u64,
+    },
+    /// The resource cannot be destroyed while other resources depend on it: a texture with
+    /// live views, a resource or layout used by a bind group, a bind group layout used by a
+    /// pipeline layout, a pipeline layout used by a pipeline.
     #[error("the {resource} is still used by {dependents} other resources")]
     #[non_exhaustive]
     ResourceInUse {
@@ -76,6 +93,31 @@ pub enum RhiError {
         /// How many resources still depend on it.
         dependents: u32,
     },
+    /// A shader module failed to parse or to validate.
+    #[error("{}", shader_message(.message, .location.as_ref()))]
+    #[non_exhaustive]
+    Shader {
+        /// What is wrong, as naga reports it.
+        message: String,
+        /// Where in the WGSL source, when the error has a location (SPIR-V errors have none).
+        location: Option<SourceLocation>,
+    },
+    /// A pipeline's shader does not fit the rest of its descriptor: a missing entry point, a
+    /// binding missing from the pipeline layout or of another type, a vertex input without an
+    /// attribute, a fragment output that does not fit its color target, a workgroup over the
+    /// limits.
+    #[error("{stage} shader interface mismatch: {message}")]
+    #[non_exhaustive]
+    ShaderInterface {
+        /// The stage whose entry point does not fit.
+        stage: ShaderStage,
+        /// What does not fit.
+        message: String,
+    },
+    /// A pipeline compilation task did not finish: it was cancelled, it panicked, or the
+    /// blocking pool refused it.
+    #[error("pipeline compilation task failed: {0}")]
+    Task(AsyncError),
     /// The backend rejected an operation that passed `pragma_rhi`'s own validation, or failed
     /// to create a device. The message comes from the backend and is not stable.
     #[error("backend error: {message}")]
@@ -107,6 +149,13 @@ impl RhiError {
         Self::Backend {
             message: message.into(),
         }
+    }
+}
+
+fn shader_message(message: &str, location: Option<&SourceLocation>) -> String {
+    match location {
+        Some(at) => format!("shader error at {}:{}: {message}", at.line, at.column),
+        None => format!("shader error: {message}"),
     }
 }
 

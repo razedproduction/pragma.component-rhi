@@ -1,6 +1,6 @@
 # Architecture
 
-Status: §2, §3 and §5 are implemented (M1); the rest is the intended design. Sections marked
+Status: §2, §3, §3a and §5 are implemented (M1, M2); the rest is the intended design. Sections marked
 *open* are decided in the milestone named there and recorded in `DECISIONS.md`.
 
 ## 1. Place in the stack
@@ -43,8 +43,29 @@ backend panic, and a program tested with the default limits behaves the same on 
 Table growth uses `try_reserve` → `RhiError::OutOfMemory`; the table slot is reserved before the
 backend object is created, so a failure never has to roll a backend object back.
 
-Destruction is immediate in M1. From M4 it is **deferred**: a resource is freed only after the
+Resources that reference others pin them (DECISIONS #14): a bind group pins its layout and the
+buffers, samplers and views it binds; a pipeline layout pins its bind group layouts; a pipeline
+pins its pipeline layout. Destroying a pinned resource is `RhiError::ResourceInUse`.
+
+Destruction is immediate before M4. From M4 it is **deferred**: a resource is freed only after the
 last GPU frame that used it retired.
+
+## 3a. Shaders and pipelines
+
+Shaders are parsed and validated by naga inside `pragma_rhi`, before any backend (DECISIONS
+#13), so the null backend rejects exactly what wgpu would and errors point at a line and column.
+The reflection of each entry point — the resources it uses, its `@location` inputs and outputs,
+its workgroup size — is kept with the module. Pipeline creation validates in two parts: the
+descriptor's own rules against the device's limits, and the **shader interface** against the
+pipeline layout, vertex buffers and color targets (`RhiError::ShaderInterface`). Only then does
+a backend compile.
+
+A compiled pipeline is cached per device under a key of everything it depends on (DECISIONS
+#14); layouts and modules are named in keys by serials never reused on the device, and an entry
+is dropped with its module or layout. `compile_*_pipeline` validates on the calling thread and
+runs only the backend compilation on the pragma.core executor's blocking pool; `poll_*` installs
+the result on the device at a point the frame thread chooses, so the device has a single owner
+and no locks.
 
 ## 4. Command recording on the frame graph
 

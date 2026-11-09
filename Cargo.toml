@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -14,7 +14,7 @@ categories = ["game-development", "graphics", "rendering::graphics-api"]
 
 [workspace.dependencies]
 # Internal crates: exact versions (lockstep), as in pragma.core (DECISIONS.md #4).
-pragma_rhi = { path = "crates/pragma_rhi", version = "=0.1.0" }
+pragma_rhi = { path = "crates/pragma_rhi", version = "=0.2.0" }
 
 # The runtime core this component is built on (DECISIONS.md #2).
 pragma_core = { version = "1.0.0", default-features = false }
@@ -22,7 +22,10 @@ pragma_core = { version = "1.0.0", default-features = false }
 # External - pure Rust only (deny.toml).
 # The GPU backend (DECISIONS.md #8): only the Vulkan and D3D12 backends of the supported platforms
 # (DECISIONS.md #3); no GLES (EGL/ANGLE), Metal or WebGPU.
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "dx12", "wgsl"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "dx12", "naga-ir"] }
+# Shaders are parsed and validated by `pragma_rhi` itself, on every backend, and handed to wgpu as
+# naga IR (DECISIONS.md #13); the version is the one wgpu 30 is built on.
+naga = { version = "30.0.1", default-features = false, features = ["wgsl-in", "spv-in"] }
 # Blocks on wgpu's adapter/device futures without an async runtime (DECISIONS.md #11).
 pollster = "0.4.0"
 bitflags = "2.13.2"

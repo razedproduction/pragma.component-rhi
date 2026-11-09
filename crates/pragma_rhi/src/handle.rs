@@ -17,6 +17,18 @@ pub enum ResourceKind {
     TextureView,
     /// A [`Sampler`].
     Sampler,
+    /// A [`ShaderModule`].
+    ShaderModule,
+    /// A [`BindGroupLayout`].
+    BindGroupLayout,
+    /// A [`BindGroup`].
+    BindGroup,
+    /// A [`PipelineLayout`].
+    PipelineLayout,
+    /// A [`RenderPipeline`].
+    RenderPipeline,
+    /// A [`ComputePipeline`].
+    ComputePipeline,
 }
 
 impl fmt::Display for ResourceKind {
@@ -26,6 +38,12 @@ impl fmt::Display for ResourceKind {
             Self::Texture => "texture",
             Self::TextureView => "texture view",
             Self::Sampler => "sampler",
+            Self::ShaderModule => "shader module",
+            Self::BindGroupLayout => "bind group layout",
+            Self::BindGroup => "bind group",
+            Self::PipelineLayout => "pipeline layout",
+            Self::RenderPipeline => "render pipeline",
+            Self::ComputePipeline => "compute pipeline",
         })
     }
 }
@@ -83,6 +101,31 @@ handle!(
 handle!(
     /// A texture sampler.
     Sampler
+);
+handle!(
+    /// A validated shader module (WGSL or SPIR-V); its entry points can be inspected.
+    ShaderModule
+);
+handle!(
+    /// The shape of a bind group: which resources sit at which binding numbers.
+    BindGroupLayout
+);
+handle!(
+    /// Resources bound to the slots of a [`BindGroupLayout`]; while it lives, the layout and
+    /// every bound resource cannot be destroyed.
+    BindGroup
+);
+handle!(
+    /// The bind group layouts of a pipeline; they cannot be destroyed while it lives.
+    PipelineLayout
+);
+handle!(
+    /// A render pipeline; its [`PipelineLayout`] cannot be destroyed while it lives.
+    RenderPipeline
+);
+handle!(
+    /// A compute pipeline; its [`PipelineLayout`] cannot be destroyed while it lives.
+    ComputePipeline
 );
 
 #[derive(Debug)]

@@ -14,9 +14,10 @@ categories.workspace = true
 publish = false
 
 [dependencies]
-pragma_core = { workspace = true, features = ["jobs", "graph"] }
+pragma_core = { workspace = true, features = ["jobs", "graph", "async"] }
 thiserror = { workspace = true }
 wgpu = { workspace = true }
+naga = { workspace = true }
 pollster = { workspace = true }
 bitflags = { workspace = true }
 

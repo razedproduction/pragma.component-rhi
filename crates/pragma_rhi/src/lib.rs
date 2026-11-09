@@ -7,7 +7,13 @@
 //! against its [`Limits`], and names them by `Copy` generational handles. Every failure,
 //! including device loss and out-of-memory, is an [`RhiError`]; nothing panics.
 //!
-//! No wgpu type appears in the public API (DECISIONS.md #8). The crate is at milestone M1; see
+//! Shader modules (WGSL or SPIR-V) are validated by naga on every backend; bind group layouts,
+//! bind groups, pipeline layouts and render and compute pipelines are checked against each
+//! other and the shaders' interfaces before a backend compiles anything. Pipelines are cached
+//! per device and can be compiled on a pragma.core executor's blocking pool
+//! ([`Device::compile_render_pipeline`]).
+//!
+//! No wgpu type appears in the public API (DECISIONS.md #8). The crate is at milestone M2; see
 //! `docs/roadmap.md` for what comes next and `docs/architecture.md` for the design.
 //!
 //! ```
@@ -43,23 +49,49 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod binding;
 mod device;
 mod error;
 mod handle;
 mod instance;
 mod limits;
+mod pending;
+mod pipeline;
 mod resource;
+mod shader;
 
+pub use binding::{
+    BindGroupDescriptor, BindGroupEntry, BindGroupInfo, BindGroupLayoutDescriptor,
+    BindGroupLayoutEntry, BindGroupLayoutInfo, BindingResource, BindingType, BufferBinding,
+    BufferBindingType, PipelineLayoutDescriptor, PipelineLayoutInfo, SamplerBindingType,
+    StorageTextureAccess, TextureSampleType,
+};
 pub use device::{Device, DeviceDescriptor};
 pub use error::RhiError;
-pub use handle::{Buffer, ResourceKind, Sampler, Texture, TextureView};
+pub use handle::{
+    BindGroup, BindGroupLayout, Buffer, ComputePipeline, PipelineLayout, RenderPipeline,
+    ResourceKind, Sampler, ShaderModule, Texture, TextureView,
+};
 pub use instance::{
     Adapter, AdapterInfo, Backend, Backends, DeviceType, Instance, InstanceDescriptor, NullConfig,
 };
 pub use limits::Limits;
+pub use pending::{PendingComputePipeline, PendingRenderPipeline};
+pub use pipeline::{
+    BlendComponent, BlendFactor, BlendOperation, BlendState, ColorTargetState, ColorWrites,
+    ComputePipelineDescriptor, ComputePipelineInfo, DepthBiasState, DepthStencilState, Face,
+    FragmentState, FrontFace, IndexFormat, MultisampleState, PipelineCacheStats, PrimitiveState,
+    PrimitiveTopology, RenderPipelineDescriptor, RenderPipelineInfo, StencilFaceState,
+    StencilOperation, StencilState, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState,
+    VertexStepMode,
+};
 pub use resource::{
     AddressMode, BufferDescriptor, BufferInfo, BufferUsages, CompareFunction, Extent3d, FilterMode,
     SamplerDescriptor, SamplerInfo, TextureAspect, TextureDescriptor, TextureDimension,
     TextureFormat, TextureInfo, TextureUsages, TextureViewDescriptor, TextureViewDimension,
     TextureViewInfo,
+};
+pub use shader::{
+    EntryPointInfo, ShaderModuleDescriptor, ShaderModuleInfo, ShaderSource, ShaderStage,
+    ShaderStages, SourceLocation,
 };

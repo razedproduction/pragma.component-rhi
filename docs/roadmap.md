@@ -10,7 +10,7 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 |---|---|---|---|
 | M0 | 0.0.1 | Repository foundation | ✅ |
 | M1 | 0.1.0 | Instance, devices and resources; the null backend | ✅ |
-| M2 | 0.2.0 | Shaders, bind groups, pipelines | 📋 |
+| M2 | 0.2.0 | Shaders, bind groups, pipelines | ✅ |
 | M3 | 0.3.0 | Command recording on the pragma.core frame graph, vertical slice | 📋 |
 | M4 | 0.4.0 | Surfaces, frames in flight, uploads, deferred destruction | 📋 |
 | M5 | 0.5.0 | Hardening: golden images, fuzz, benches, semver | 📋 |
@@ -43,13 +43,19 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
       (`Device::simulate_device_loss` for recovery tests)
 - [x] Property tests: handles against a naive `HashMap` oracle (create / destroy / stale use)
 
-## M2 — Shaders and pipelines (0.2.0)
+## M2 — Shaders and pipelines (0.2.0) ✅
 
-- [ ] Shader modules from WGSL (and SPIR-V passthrough), validated by `naga` → `RhiError` with
-      the source location
-- [ ] Bind group layouts, bind groups, pipeline layouts
-- [ ] Render and compute pipelines; a pipeline cache keyed by descriptor hash
-- [ ] Pipeline compilation off the frame thread as a pragma.core async task
+- [x] Shader modules from WGSL and SPIR-V, parsed and validated by `naga` in `pragma_rhi` on every
+      backend → `RhiError::Shader` with the source location; handed to wgpu as naga IR. SPIR-V is
+      translated and validated like WGSL rather than passed through raw, which would need
+      `unsafe` (DECISIONS #13)
+- [x] Bind group layouts, bind groups, pipeline layouts, validated against WebGPU's rules and the
+      device's limits; dependents pin what they reference (DECISIONS #14)
+- [x] Render and compute pipelines; the shader interface (bindings, vertex inputs, color
+      targets, inter-stage locations, workgroup size) checked against the descriptor →
+      `RhiError::ShaderInterface`; a per-device pipeline cache keyed by the descriptor
+- [x] Pipeline compilation off the frame thread on the pragma.core executor's blocking pool
+      (`compile_*` → `poll_*` / `wait_*`)
 
 ## M3 — Commands and the vertical slice (0.3.0)
 
