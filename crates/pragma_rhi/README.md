@@ -4,6 +4,7 @@ Part of [pragma.component-rhi](https://github.com/razedproduction/pragma.compone
 Hardware Interface for game engines and frameworks built on
 [pragma.core](https://github.com/razedproduction/pragma.core).
 
-Early development (M0): no public API yet.
+Early development (M1): instance, adapters, devices, buffers, textures, views, samplers.
+No shaders, pipelines or command recording yet.
 
 License: MIT.

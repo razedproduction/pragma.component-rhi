@@ -1,10 +1,65 @@
 //! A Render Hardware Interface for game engines and frameworks built on
 //! [`pragma_core`](https://docs.rs/pragma_core).
 //!
-//! The crate is at milestone M0 (repository foundation): the public API does not exist yet.
-//! See `docs/roadmap.md` for the plan and `docs/architecture.md` for the intended design.
+//! An [`Instance`] enumerates [`Adapter`]s of the enabled backends — Vulkan and D3D12 through
+//! wgpu, and a headless, deterministic null backend — and an adapter creates a [`Device`]. The
+//! device creates buffers, textures, texture views and samplers from descriptors it validates
+//! against its [`Limits`], and names them by `Copy` generational handles. Every failure,
+//! including device loss and out-of-memory, is an [`RhiError`]; nothing panics.
+//!
+//! No wgpu type appears in the public API (DECISIONS.md #8). The crate is at milestone M1; see
+//! `docs/roadmap.md` for what comes next and `docs/architecture.md` for the design.
+//!
+//! ```
+//! use pragma_rhi::{
+//!     Backend, DeviceDescriptor, Extent3d, Instance, InstanceDescriptor, RhiError,
+//!     TextureDescriptor, TextureFormat, TextureUsages, TextureViewDescriptor,
+//! };
+//!
+//! let instance = Instance::new(&InstanceDescriptor::null());
+//! let adapter = instance
+//!     .adapters()
+//!     .into_iter()
+//!     .find(|adapter| adapter.info().backend == Backend::Null)
+//!     .ok_or(RhiError::DeviceLost)?;
+//! let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+//!
+//! let texture = device.create_texture(&TextureDescriptor {
+//!     size: Extent3d { width: 256, height: 256, depth_or_array_layers: 1 },
+//!     mip_level_count: 9,
+//!     format: TextureFormat::Rgba8UnormSrgb,
+//!     usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+//!     ..TextureDescriptor::default()
+//! })?;
+//! let view = device.create_texture_view(texture, &TextureViewDescriptor::default())?;
+//! assert_eq!(device.texture_view_info(view)?.mip_level_count, 9);
+//!
+//! // A texture with live views cannot be destroyed.
+//! assert!(matches!(device.destroy_texture(texture), Err(RhiError::ResourceInUse { .. })));
+//! device.destroy_texture_view(view)?;
+//! device.destroy_texture(texture)?;
+//! # Ok::<(), RhiError>(())
+//! ```
 #![forbid(unsafe_code)]
 
+mod backend;
+mod device;
 mod error;
+mod handle;
+mod instance;
+mod limits;
+mod resource;
 
+pub use device::{Device, DeviceDescriptor};
 pub use error::RhiError;
+pub use handle::{Buffer, ResourceKind, Sampler, Texture, TextureView};
+pub use instance::{
+    Adapter, AdapterInfo, Backend, Backends, DeviceType, Instance, InstanceDescriptor, NullConfig,
+};
+pub use limits::Limits;
+pub use resource::{
+    AddressMode, BufferDescriptor, BufferInfo, BufferUsages, CompareFunction, Extent3d, FilterMode,
+    SamplerDescriptor, SamplerInfo, TextureAspect, TextureDescriptor, TextureDimension,
+    TextureFormat, TextureInfo, TextureUsages, TextureViewDescriptor, TextureViewDimension,
+    TextureViewInfo,
+};

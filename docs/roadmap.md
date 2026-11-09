@@ -9,7 +9,7 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 | Milestone | Version | Essence | Status |
 |---|---|---|---|
 | M0 | 0.0.1 | Repository foundation | ✅ |
-| M1 | 0.1.0 | Instance, devices and resources; the null backend | 📋 |
+| M1 | 0.1.0 | Instance, devices and resources; the null backend | ✅ |
 | M2 | 0.2.0 | Shaders, bind groups, pipelines | 📋 |
 | M3 | 0.3.0 | Command recording on the pragma.core frame graph, vertical slice | 📋 |
 | M4 | 0.4.0 | Surfaces, frames in flight, uploads, deferred destruction | 📋 |
@@ -27,19 +27,21 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 - [x] Docs: README, architecture, roadmap, DECISIONS, CONTRIBUTING, CHANGELOG
 - [x] **Decision:** wgpu as the backend, hidden behind own types (DECISIONS #8)
 
-## M1 — Instance, devices, resources (0.1.0)
+## M1 — Instance, devices, resources (0.1.0) ✅
 
-- [ ] Add `wgpu`; audit its tree on both targets (`cargo deny`, `tools/audit_workspace.py`); every
-      accepted exception recorded in `DECISIONS.md` (#5)
-- [ ] **Decision:** handle model (generational ids into a resource table vs. reference-counted
-      handles) and who owns destruction — see `docs/architecture.md` §3
-- [ ] **Decision:** backend seam: an internal trait vs. an enum over {wgpu, null}
-- [ ] `Instance` → `Adapter` enumeration (with info and limits) → `Device` + `Queue`, headless
-- [ ] Null backend: same validation and handle rules as wgpu, no GPU, deterministic
-- [ ] `Buffer`, `Texture`, `TextureView`, `Sampler` with typed descriptors; descriptors validated
-      against the adapter's limits before reaching the backend → `RhiError`
-- [ ] Device loss and out-of-memory reported as `RhiError`, never a panic or an abort
-- [ ] Property tests: handles against a naive `HashMap` oracle (create / destroy / stale use)
+- [x] Add `wgpu`; audit its tree on both targets (`cargo deny`, `tools/audit_workspace.py`); every
+      accepted exception recorded in `DECISIONS.md` (#11: none was needed)
+- [x] **Decision:** handle model — generational ids, explicit destruction (DECISIONS #9)
+- [x] **Decision:** backend seam — an enum over {wgpu, null} (DECISIONS #10)
+- [x] `Instance` → `Adapter` enumeration (with info and limits) → `Device`, headless; the wgpu
+      queue stays inside the device until submission (M3)
+- [x] Null backend: same validation and handle rules as wgpu, no GPU, deterministic, with a
+      device-memory budget for out-of-memory tests
+- [x] `Buffer`, `Texture`, `TextureView`, `Sampler` with typed descriptors; descriptors validated
+      against the device's limits before reaching the backend → `RhiError`
+- [x] Device loss and out-of-memory reported as `RhiError`, never a panic or an abort
+      (`Device::simulate_device_loss` for recovery tests)
+- [x] Property tests: handles against a naive `HashMap` oracle (create / destroy / stale use)
 
 ## M2 — Shaders and pipelines (0.2.0)
 

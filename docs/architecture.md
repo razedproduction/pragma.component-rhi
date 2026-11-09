@@ -1,7 +1,7 @@
 # Architecture
 
-Status: **intended design** (M0). Sections marked *open* are decided in the milestone named there
-and recorded in `DECISIONS.md`.
+Status: §2, §3 and §5 are implemented (M1); the rest is the intended design. Sections marked
+*open* are decided in the milestone named there and recorded in `DECISIONS.md`.
 
 ## 1. Place in the stack
 
@@ -25,23 +25,26 @@ has its own descriptors, handles and errors, so a wgpu major release does not br
 The **null backend** implements the same validation and handle rules without a GPU; tests and CI
 use it for everything that is not pixels. Pixels are checked on software adapters (WARP, lavapipe).
 
-*Open (M1):* the seam between the front end and the backends — an internal trait object, or an
-enum over the two backends (no dynamic dispatch, exhaustive matching).
+The seam is an internal enum over the two backends (DECISIONS #10): no dynamic dispatch, and a
+forgotten backend is a compile error. The front end validates; a backend only creates objects.
+wgpu reports failures through error scopes, which every creation opens (DECISIONS #11).
 
-## 3. Resources — *open (M1)*
+## 3. Resources
 
-Candidates for handles:
+Handles are **generational ids** (DECISIONS #9): device id + slot index + generation, `Copy`,
+12 bytes, cheap to store in ECS components. Each device keeps one table per resource kind.
+Destruction is explicit (`Device::destroy_*`); afterwards every copy of the handle returns
+`RhiError::StaleHandle`, and a handle used on another device returns `RhiError::ForeignHandle`.
+A slot whose generation would wrap is retired. A texture with live views cannot be destroyed.
 
-- **Generational ids** into a per-device resource table (index + generation), as `Entity` in
-  pragma_ecs: `Copy`, cheap to store in ECS components, a stale handle is detected and returned as
-  `RhiError`. Destruction is explicit.
-- **Reference-counted handles** (`Arc`-like): destruction when the last handle drops; simpler to
-  use, but lifetimes become implicit and `Drop` cannot report errors.
+Descriptors are validated against the **device's** limits (requested at creation, at most the
+adapter's) before they reach the backend, so a wrong size or format is a typed error, not a
+backend panic, and a program tested with the default limits behaves the same on a stronger GPU.
+Table growth uses `try_reserve` → `RhiError::OutOfMemory`; the table slot is reserved before the
+backend object is created, so a failure never has to roll a backend object back.
 
-Either way destruction is **deferred** (M4): a resource is freed only after the last GPU frame
-that used it retired. Descriptors are validated against the adapter's limits before they reach the
-backend, so a wrong size or format is a typed error, not a backend panic. Allocation sizes set by
-input are bounded (`try_reserve` → `RhiError::OutOfMemory`).
+Destruction is immediate in M1. From M4 it is **deferred**: a resource is freed only after the
+last GPU frame that used it retired.
 
 ## 4. Command recording on the frame graph
 

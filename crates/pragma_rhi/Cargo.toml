@@ -16,6 +16,9 @@ publish = false
 [dependencies]
 pragma_core = { workspace = true, features = ["jobs", "graph"] }
 thiserror = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+bitflags = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

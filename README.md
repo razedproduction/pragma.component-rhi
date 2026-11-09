@@ -15,8 +15,10 @@ types; a null backend runs everything except pixels without a GPU.
 
 ## Status
 
-**M0 — repository foundation.** There is no public API yet. See the [roadmap](docs/roadmap.md)
-and the [intended architecture](docs/architecture.md).
+**M1 (0.1.0) — instance, devices, resources.** Adapters of Vulkan, D3D12 and the null backend;
+devices; buffers, textures, views and samplers with validated descriptors and generational
+handles. Shaders and pipelines come next (M2). See the [roadmap](docs/roadmap.md) and the
+[architecture](docs/architecture.md).
 
 ## Building
 
