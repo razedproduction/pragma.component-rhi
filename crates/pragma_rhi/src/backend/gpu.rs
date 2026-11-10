@@ -7,12 +7,18 @@
 //! there.
 
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use super::{Batch, BufRegion, ComputeOp, Op, RenderOp, TexRegion, convert, wgpu_of};
+use super::{
+    Batch, BufRegion, ComputeOp, MapFlag, MapMode, Op, RenderOp, TexRegion, convert, wgpu_of,
+};
 use crate::binding::BindGroupLayoutEntry;
 use crate::pipeline::{ComputeKey, RenderKey};
+use crate::surface::{
+    CompositeAlphaMode, PresentMode, SurfaceCapabilities, SurfaceConfiguration, SurfaceError,
+};
 use crate::{Backend, BufferInfo, Limits, RhiError, SamplerInfo, TextureInfo, TextureViewInfo};
 
 /// What a creation on any thread needs: the device and its loss flag. Cheap to clone (wgpu's
@@ -151,8 +157,14 @@ impl GpuContext {
 
 pub(crate) struct GpuDevice {
     context: GpuContext,
+    adapter: wgpu::Adapter,
     queue: wgpu::Queue,
     backend: Backend,
+    /// The last of our submission indices whose work the GPU has finished; written by
+    /// `on_submitted_work_done` callbacks, which run inside a device poll.
+    completed: Arc<AtomicU64>,
+    /// Our submission index and wgpu's, for every submission not known to be complete.
+    pending: VecDeque<(u64, wgpu::SubmissionIndex)>,
 }
 
 impl core::fmt::Debug for GpuDevice {
@@ -211,8 +223,11 @@ impl GpuDevice {
         device.on_uncaptured_error(Arc::new(|_error: wgpu::Error| {}));
         Ok(Self {
             context: GpuContext { device, lost },
+            adapter: adapter.clone(),
             queue,
             backend,
+            completed: Arc::new(AtomicU64::new(0)),
+            pending: VecDeque::new(),
         })
     }
 
@@ -400,9 +415,13 @@ impl GpuDevice {
 
     // -- queue ----------------------------------------------------------------------------
 
-    /// Encodes every validated command buffer and submits them in order, inside error scopes.
-    pub(crate) fn execute(&self, batches: &[Batch<'_>]) -> Result<(), RhiError> {
-        self.context.scoped(0, |device| -> Result<(), RhiError> {
+    /// Encodes every validated command buffer and submits them in order, inside error scopes,
+    /// as our submission `index`.
+    pub(crate) fn execute(&mut self, batches: &[Batch<'_>], index: u64) -> Result<(), RhiError> {
+        self.pending
+            .try_reserve(1)
+            .map_err(|_| RhiError::OutOfMemory { bytes: 16 })?;
+        let submission = self.context.scoped(0, |device| {
             let mut buffers = Vec::new();
             buffers
                 .try_reserve_exact(batches.len())
@@ -417,9 +436,182 @@ impl GpuDevice {
                 }
                 buffers.push(encoder.finish());
             }
-            self.queue.submit(buffers);
-            Ok(())
-        })?
+            let submission = self.queue.submit(buffers);
+            let completed = Arc::clone(&self.completed);
+            self.queue.on_submitted_work_done(move || {
+                completed.fetch_max(index, Ordering::AcqRel);
+            });
+            Ok::<_, RhiError>(submission)
+        })??;
+        self.pending.push_back((index, submission));
+        Ok(())
+    }
+
+    /// Learns what the GPU finished; with `wait`, first blocks until our submission `wait` (or
+    /// the last one before it) is done. Returns the last finished submission.
+    pub(crate) fn poll(&mut self, wait: Option<u64>) -> Result<u64, RhiError> {
+        let target = wait.and_then(|index| {
+            self.pending
+                .iter()
+                .take_while(|(ours, _)| *ours <= index)
+                .last()
+                .cloned()
+        });
+        let poll = match &target {
+            Some((_, submission)) => wgpu::PollType::Wait {
+                submission_index: Some(submission.clone()),
+                timeout: None,
+            },
+            None => wgpu::PollType::Poll,
+        };
+        let polled = self.context.device.poll(poll);
+        if self.is_lost() {
+            return Err(RhiError::DeviceLost);
+        }
+        polled.map_err(|err| RhiError::backend(err.to_string()))?;
+        if let Some((index, _)) = target {
+            // A submission waited for is done, whether or not its callback has run yet.
+            self.completed.fetch_max(index, Ordering::AcqRel);
+        }
+        let completed = self.completed.load(Ordering::Acquire);
+        while self
+            .pending
+            .front()
+            .is_some_and(|(index, _)| *index <= completed)
+        {
+            self.pending.pop_front();
+        }
+        Ok(completed)
+    }
+
+    /// Blocks until every pending buffer mapping has resolved.
+    pub(crate) fn wait_for_maps(&self) -> Result<(), RhiError> {
+        let polled = self
+            .context
+            .device
+            .poll(wgpu::PollType::wait_indefinitely());
+        if self.is_lost() {
+            return Err(RhiError::DeviceLost);
+        }
+        polled
+            .map(|_| ())
+            .map_err(|err| RhiError::backend(err.to_string()))
+    }
+
+    // -- mapped staging -------------------------------------------------------------------
+
+    /// A buffer created mapped, for the CPU to write before its first use.
+    pub(crate) fn create_mapped_buffer(
+        &self,
+        label: Option<&str>,
+        info: &BufferInfo,
+    ) -> Result<wgpu::Buffer, RhiError> {
+        let desc = wgpu::BufferDescriptor {
+            label,
+            size: info.size,
+            usage: convert::buffer_usages(info.usage),
+            mapped_at_creation: true,
+        };
+        self.context
+            .scoped(info.size, |device| device.create_buffer(&desc))
+    }
+
+    /// Writes into a mapped range; `offset` is a multiple of 8, the length a multiple of 4.
+    pub(crate) fn write_mapped(
+        buffer: &wgpu::Buffer,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), RhiError> {
+        let end = offset.saturating_add(data.len() as u64);
+        let mut view = buffer
+            .get_mapped_range_mut(offset..end)
+            .map_err(|err| RhiError::backend(err.to_string()))?;
+        if view.len() != data.len() {
+            return Err(RhiError::backend("a mapped range of the wrong length"));
+        }
+        view.copy_from_slice(data);
+        Ok(())
+    }
+
+    /// Reads a mapped range.
+    pub(crate) fn read_mapped(
+        buffer: &wgpu::Buffer,
+        offset: u64,
+        size: u64,
+    ) -> Result<Vec<u8>, RhiError> {
+        buffer
+            .get_mapped_range(offset..offset.saturating_add(size))
+            .map(|view| view.to_vec())
+            .map_err(|err| RhiError::backend(err.to_string()))
+    }
+
+    /// Starts mapping a range; `flag` resolves inside a later poll.
+    pub(crate) fn map_async(
+        &self,
+        buffer: &wgpu::Buffer,
+        mode: MapMode,
+        offset: u64,
+        size: u64,
+        flag: &MapFlag,
+    ) -> Result<(), RhiError> {
+        let mode = match mode {
+            MapMode::Read => wgpu::MapMode::Read,
+            MapMode::Write => wgpu::MapMode::Write,
+        };
+        let flag = flag.clone();
+        self.context.scoped(0, |_| {
+            buffer.map_async(mode, offset..offset.saturating_add(size), move |result| {
+                flag.resolve(result.is_ok());
+            });
+        })
+    }
+
+    // -- surfaces -------------------------------------------------------------------------
+
+    pub(crate) fn surface_capabilities(&self, surface: &wgpu::Surface<'_>) -> SurfaceCapabilities {
+        capabilities(surface, &self.adapter)
+    }
+
+    pub(crate) fn configure_surface(
+        &self,
+        surface: &wgpu::Surface<'_>,
+        config: &SurfaceConfiguration,
+    ) -> Result<(), RhiError> {
+        let config = wgpu::SurfaceConfiguration {
+            usage: convert::texture_usages(config.usage),
+            format: convert::texture_format(config.format),
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            width: config.width,
+            height: config.height,
+            desired_maximum_frame_latency: config.desired_maximum_frame_latency,
+            present_mode: present_mode(config.present_mode),
+            alpha_mode: alpha_mode(config.alpha_mode),
+            view_formats: Vec::new(),
+        };
+        self.context
+            .scoped(0, |device| surface.configure(device, &config))
+    }
+
+    /// Acquires the next swapchain texture; `true` when it is suboptimal.
+    pub(crate) fn acquire(
+        &self,
+        surface: &wgpu::Surface<'_>,
+    ) -> Result<(wgpu::SurfaceTexture, bool), RhiError> {
+        match self.context.scoped(0, |_| surface.get_current_texture())? {
+            wgpu::CurrentSurfaceTexture::Success(texture) => Ok((texture, false)),
+            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Ok((texture, true)),
+            wgpu::CurrentSurfaceTexture::Timeout => Err(SurfaceError::Timeout.into()),
+            wgpu::CurrentSurfaceTexture::Occluded => Err(SurfaceError::Occluded.into()),
+            wgpu::CurrentSurfaceTexture::Outdated => Err(SurfaceError::Outdated.into()),
+            wgpu::CurrentSurfaceTexture::Lost => Err(SurfaceError::Lost.into()),
+            wgpu::CurrentSurfaceTexture::Validation => Err(RhiError::backend(
+                "acquiring a swapchain texture failed validation",
+            )),
+        }
+    }
+
+    pub(crate) fn present(&self, texture: wgpu::SurfaceTexture) -> Result<(), RhiError> {
+        self.context.scoped(0, |_| self.queue.present(texture))
     }
 
     pub(crate) fn write_buffer(
@@ -646,4 +838,75 @@ fn encode(encoder: &mut wgpu::CommandEncoder, op: &Op<'_>) -> Result<(), RhiErro
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Surfaces
+
+/// What `surface` supports on `adapter`; no formats when it cannot present there.
+pub(crate) fn capabilities(
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+) -> SurfaceCapabilities {
+    let caps = surface.get_capabilities(adapter);
+    SurfaceCapabilities {
+        formats: caps
+            .formats
+            .iter()
+            .filter_map(|format| convert::texture_format_from_wgpu(*format))
+            .collect(),
+        present_modes: caps
+            .present_modes
+            .iter()
+            .filter_map(|mode| present_mode_from_wgpu(*mode))
+            .collect(),
+        alpha_modes: caps
+            .alpha_modes
+            .iter()
+            .map(|mode| alpha_mode_from_wgpu(*mode))
+            .collect(),
+        usages: convert::texture_usages_from_wgpu(caps.usages),
+    }
+}
+
+const fn present_mode(mode: PresentMode) -> wgpu::PresentMode {
+    match mode {
+        PresentMode::AutoVsync => wgpu::PresentMode::AutoVsync,
+        PresentMode::AutoNoVsync => wgpu::PresentMode::AutoNoVsync,
+        PresentMode::Fifo => wgpu::PresentMode::Fifo,
+        PresentMode::FifoRelaxed => wgpu::PresentMode::FifoRelaxed,
+        PresentMode::Immediate => wgpu::PresentMode::Immediate,
+        PresentMode::Mailbox => wgpu::PresentMode::Mailbox,
+    }
+}
+
+const fn present_mode_from_wgpu(mode: wgpu::PresentMode) -> Option<PresentMode> {
+    match mode {
+        wgpu::PresentMode::Fifo => Some(PresentMode::Fifo),
+        wgpu::PresentMode::FifoRelaxed => Some(PresentMode::FifoRelaxed),
+        wgpu::PresentMode::Immediate => Some(PresentMode::Immediate),
+        wgpu::PresentMode::Mailbox => Some(PresentMode::Mailbox),
+        // Capabilities list concrete modes only.
+        wgpu::PresentMode::AutoVsync | wgpu::PresentMode::AutoNoVsync => None,
+    }
+}
+
+const fn alpha_mode(mode: CompositeAlphaMode) -> wgpu::CompositeAlphaMode {
+    match mode {
+        CompositeAlphaMode::Auto => wgpu::CompositeAlphaMode::Auto,
+        CompositeAlphaMode::Opaque => wgpu::CompositeAlphaMode::Opaque,
+        CompositeAlphaMode::PreMultiplied => wgpu::CompositeAlphaMode::PreMultiplied,
+        CompositeAlphaMode::PostMultiplied => wgpu::CompositeAlphaMode::PostMultiplied,
+        CompositeAlphaMode::Inherit => wgpu::CompositeAlphaMode::Inherit,
+    }
+}
+
+const fn alpha_mode_from_wgpu(mode: wgpu::CompositeAlphaMode) -> CompositeAlphaMode {
+    match mode {
+        wgpu::CompositeAlphaMode::Auto => CompositeAlphaMode::Auto,
+        wgpu::CompositeAlphaMode::Opaque => CompositeAlphaMode::Opaque,
+        wgpu::CompositeAlphaMode::PreMultiplied => CompositeAlphaMode::PreMultiplied,
+        wgpu::CompositeAlphaMode::PostMultiplied => CompositeAlphaMode::PostMultiplied,
+        wgpu::CompositeAlphaMode::Inherit => CompositeAlphaMode::Inherit,
+    }
 }

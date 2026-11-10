@@ -21,15 +21,16 @@ use crate::device::{
     BufferEntry, ComputeEntry, GroupEntry, GroupLayoutEntry, PipelineLayoutEntry, RenderEntry,
     TextureEntry, ViewEntry,
 };
+use crate::frame::SubmissionIndex;
 use crate::handle::Table;
 use crate::pipeline::{PipelineMeta, VertexStepMode};
 use crate::resource::mip_extent;
 use crate::{
-    BindGroup, BindGroupLayout, BindingResource, Buffer, BufferDescriptor, BufferUsages,
-    CommandBuffer, CommandEncoder, ComputePipeline, Device, Extent3d, IndexFormat, Limits, LoadOp,
-    PipelineLayout, RenderPassColorAttachment, RenderPipeline, RhiError, TexelCopyBufferInfo,
-    TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect, TextureDimension,
-    TextureFormat, TextureUsages, TextureView, TextureViewDimension,
+    BindGroup, BindGroupLayout, BindingResource, Buffer, BufferUsages, CommandBuffer,
+    ComputePipeline, Device, Extent3d, IndexFormat, Limits, LoadOp, PipelineLayout,
+    RenderPassColorAttachment, RenderPipeline, RhiError, TexelCopyBufferInfo, TexelCopyTextureInfo,
+    Texture, TextureAspect, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    TextureViewDimension,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -1160,25 +1161,8 @@ const fn index_size(format: IndexFormat) -> u64 {
 // The device's queue
 
 impl Device {
-    /// Validates command buffers and submits them, in order, as one submission.
-    ///
-    /// Every command of every buffer is checked first — handles, usages, ranges, alignments,
-    /// attachments, pipeline and bind group compatibility, draw ranges, usage conflicts — and
-    /// a broken rule rejects the whole submission before the backend sees any of it. Queue
-    /// writes made before the call take effect before its commands run.
-    ///
-    /// # Errors
-    ///
-    /// [`RhiError::InvalidCommand`] naming the command buffer's label and the command; the
-    /// handles' errors ([`RhiError::StaleHandle`] for a resource destroyed after recording);
-    /// [`RhiError::OutOfMemory`] for a recording that ran out of memory;
-    /// [`RhiError::DeviceLost`]; [`RhiError::Backend`].
-    pub fn submit(
-        &mut self,
-        command_buffers: impl IntoIterator<Item = CommandBuffer>,
-    ) -> Result<(), RhiError> {
-        self.alive()?;
-        let buffers: Vec<CommandBuffer> = command_buffers.into_iter().collect();
+    /// Validates a command buffer against the live tables without submitting it.
+    pub(crate) fn check_commands(&self, buffer: &CommandBuffer) -> Result<(), RhiError> {
         let ctx = Ctx {
             limits: &self.limits,
             buffers: &self.buffers,
@@ -1190,11 +1174,93 @@ impl Device {
             render_pipelines: &self.render_pipelines,
             compute_pipelines: &self.compute_pipelines,
         };
-        let batches = buffers
-            .iter()
-            .map(|buffer| ctx.batch(buffer))
-            .collect::<Result<Vec<_>, RhiError>>()?;
-        self.backend.execute(&batches)
+        ctx.batch(buffer).map(drop)
+    }
+
+    /// Validates command buffers and submits them, in order, as one submission, and returns
+    /// its fence.
+    ///
+    /// Every command of every buffer is checked first — handles, usages, ranges, alignments,
+    /// attachments, pipeline and bind group compatibility, draw ranges, usage conflicts — and
+    /// a broken rule rejects the whole submission before the backend sees any of it. Queue
+    /// writes and uploads ([`Self::upload_buffer`]) made before the call take effect before its
+    /// commands run, queue writes first.
+    ///
+    /// # Errors
+    ///
+    /// [`RhiError::InvalidCommand`] naming the command buffer's label and the command; the
+    /// handles' errors ([`RhiError::StaleHandle`] for a resource destroyed after recording);
+    /// [`RhiError::OutOfMemory`] for a recording that ran out of memory;
+    /// [`RhiError::DeviceLost`]; [`RhiError::Backend`]. A rejected submission keeps the
+    /// pending uploads for the next one.
+    pub fn submit(
+        &mut self,
+        command_buffers: impl IntoIterator<Item = CommandBuffer>,
+    ) -> Result<SubmissionIndex, RhiError> {
+        self.alive()?;
+        let buffers: Vec<CommandBuffer> = command_buffers.into_iter().collect();
+        let uploads = self.belt.take_pending();
+        match self.submit_with(uploads.as_ref(), &buffers) {
+            Ok(index) => Ok(index),
+            Err((err, keep_uploads)) => {
+                match uploads {
+                    Some(uploads) if keep_uploads => self.belt.restore_pending(uploads),
+                    Some(_) => self.belt.discard_pending(),
+                    None => {}
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Submits `uploads` (first) and `buffers`; on failure, also says whether the uploads are
+    /// still intact (only the caller's buffers were rejected).
+    fn submit_with(
+        &mut self,
+        uploads: Option<&CommandBuffer>,
+        buffers: &[CommandBuffer],
+    ) -> Result<SubmissionIndex, (RhiError, bool)> {
+        let index = self.timeline.next_submission().map_err(|err| (err, true))?;
+        let ctx = Ctx {
+            limits: &self.limits,
+            buffers: &self.buffers,
+            textures: &self.textures,
+            views: &self.views,
+            bind_group_layouts: &self.bind_group_layouts,
+            bind_groups: &self.bind_groups,
+            pipeline_layouts: &self.pipeline_layouts,
+            render_pipelines: &self.render_pipelines,
+            compute_pipelines: &self.compute_pipelines,
+        };
+        let mut batches = Vec::new();
+        batches
+            .try_reserve_exact(buffers.len().saturating_add(1))
+            .map_err(|_| {
+                let bytes = buffers.len() as u64;
+                (RhiError::OutOfMemory { bytes }, true)
+            })?;
+        if let Some(uploads) = uploads {
+            batches.push(ctx.batch(uploads).map_err(|err| (err, false))?);
+        }
+        for buffer in buffers {
+            batches.push(ctx.batch(buffer).map_err(|err| (err, true))?);
+        }
+        if uploads.is_some() {
+            self.belt
+                .unmap_pending(&mut self.backend, &self.buffers, index);
+        }
+        self.backend
+            .execute(&batches, index)
+            .map_err(|err| (err, false))?;
+        drop(batches);
+        self.submitted(index);
+        Ok(SubmissionIndex(index))
+    }
+
+    /// Settles the timeline after a blocking read: everything submitted has finished.
+    fn settle(&mut self) -> Result<(), RhiError> {
+        self.timeline.completed = self.backend.poll(Some(self.timeline.submitted))?;
+        self.retire()
     }
 
     /// Writes `data` into a buffer with [`BufferUsages::COPY_DST`]; it takes effect before the
@@ -1235,10 +1301,10 @@ impl Device {
         self.backend.write_buffer(&obj, offset, data)
     }
 
-    /// Waits until every submission so far has finished and reads a range of a buffer with
-    /// [`BufferUsages::MAP_READ`] or [`BufferUsages::COPY_SRC`]. Offset and size are multiples
-    /// of [`COPY_BUFFER_ALIGNMENT`]. Blocks the calling thread; meant for tests, tools and
-    /// loading, not for every frame (asynchronous readback comes with frames in flight, M4).
+    /// Submits pending uploads, waits until every submission so far has finished and reads a
+    /// range of a buffer with [`BufferUsages::MAP_READ`] or [`BufferUsages::COPY_SRC`]. Offset
+    /// and size are multiples of [`COPY_BUFFER_ALIGNMENT`]. Blocks the calling thread; meant
+    /// for tests, tools and loading — a frame reads back with [`Self::read_buffer_async`].
     ///
     /// # Errors
     ///
@@ -1252,6 +1318,7 @@ impl Device {
         size: u64,
     ) -> Result<Vec<u8>, RhiError> {
         self.alive()?;
+        self.flush_uploads()?;
         let site = Site {
             label: None,
             command: "read_buffer",
@@ -1271,12 +1338,15 @@ impl Device {
             "the range is out of bounds".to_owned()
         })?;
         let (obj, info) = (entry.obj.clone(), entry.info);
-        self.backend.read_buffer(&obj, &info, offset, size)
+        let bytes = self.backend.read_buffer(&obj, &info, offset, size)?;
+        self.settle()?;
+        Ok(bytes)
     }
 
-    /// Waits until every submission so far has finished and reads a region of a texture with
-    /// [`TextureUsages::COPY_SRC`], returning its texels row after row with no padding.
-    /// Copies through a temporary buffer; blocks like [`Self::read_buffer`].
+    /// Submits pending uploads, waits until every submission so far has finished and reads a
+    /// region of a texture with [`TextureUsages::COPY_SRC`], returning its texels row after row
+    /// with no padding. Copies through a temporary buffer; blocks like [`Self::read_buffer`] —
+    /// a frame reads back with [`Self::read_texture_async`].
     ///
     /// # Errors
     ///
@@ -1289,61 +1359,10 @@ impl Device {
         src: TexelCopyTextureInfo,
         size: Extent3d,
     ) -> Result<Vec<u8>, RhiError> {
-        self.alive()?;
-        let format = self.textures.get(src.texture)?.info.format;
-        let block = u64::from(format.block_size());
-        let row = u64::from(size.width).saturating_mul(block);
-        let (height, images) = (
-            u64::from(size.height),
-            u64::from(size.depth_or_array_layers),
-        );
-        if row == 0 || height == 0 || images == 0 {
-            return Ok(Vec::new());
-        }
-        let alignment = u64::from(COPY_BYTES_PER_ROW_ALIGNMENT);
-        let padded = row
-            .checked_next_multiple_of(alignment)
-            .ok_or(RhiError::OutOfMemory { bytes: u64::MAX })?;
-        let bytes_per_row = u32::try_from(padded)
-            .map_err(|_| RhiError::limit("bytes_per_row", padded, u32::MAX))?;
-        let total = padded
-            .checked_mul(height)
-            .and_then(|bytes| bytes.checked_mul(images))
-            .ok_or(RhiError::OutOfMemory { bytes: u64::MAX })?;
-        let staging = self.create_buffer(&BufferDescriptor {
-            label: Some("pragma_rhi read_texture"),
-            size: total,
-            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-        })?;
-        let mut encoder = CommandEncoder::new(Some("read_texture"));
-        encoder.copy_texture_to_buffer(
-            src,
-            TexelCopyBufferInfo {
-                buffer: staging,
-                layout: TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(size.height),
-                },
-            },
-            size,
-        );
-        let read = self
-            .submit([encoder.finish()])
-            .and_then(|()| self.read_buffer(staging, 0, total));
-        let destroyed = self.destroy_buffer(staging);
-        let padded_bytes = read?;
-        destroyed?;
-        let mut out = Vec::new();
-        let len = usize::try_from(row.saturating_mul(height).saturating_mul(images))
-            .map_err(|_| RhiError::OutOfMemory { bytes: u64::MAX })?;
-        out.try_reserve_exact(len)
-            .map_err(|_| RhiError::OutOfMemory { bytes: len as u64 })?;
-        let (row, padded) = (row as usize, padded as usize);
-        for line in padded_bytes.chunks(padded) {
-            out.extend_from_slice(line.get(..row).unwrap_or(line));
-        }
-        Ok(out)
+        let pending = self.read_texture_async(src, size)?;
+        let bytes = self.wait_readback(pending)?;
+        self.settle()?;
+        Ok(bytes)
     }
 }
 

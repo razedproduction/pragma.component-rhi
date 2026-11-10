@@ -55,6 +55,7 @@ fn required_limits_are_checked_against_the_adapter() {
             max_buffer_size: u64::MAX,
             ..Limits::default()
         },
+        ..DeviceDescriptor::default()
     };
     assert!(matches!(
         adapter.request_device(&desc),
@@ -77,6 +78,7 @@ fn device_limits_not_the_adapters_bound_descriptors() {
                 max_buffer_size: 1024,
                 ..Limits::default()
             },
+            ..DeviceDescriptor::default()
         })
         .expect("a null device");
     assert!(device.create_buffer(&buffer(1024)).is_ok());

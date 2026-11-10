@@ -15,14 +15,17 @@ types; a null backend runs everything except pixels without a GPU.
 
 ## Status
 
-**M3 (0.3.0) — commands and the vertical slice.** Adapters of Vulkan, D3D12 and the null
-backend; devices; buffers, textures, views and samplers; shader modules validated by naga on
-every backend; bind groups, pipeline layouts, render and compute pipelines with a pipeline cache
-and compilation on pragma.core's async pool; command encoders with render and compute passes and
-copies, recorded in parallel as frame-graph tasks and validated as a whole at submission; queue
-writes and buffer/texture readback. The null backend executes copies, clears and resolves byte
-for byte like a GPU. `cargo run --example rhi_sim` runs the whole slice on every adapter.
-Surfaces and frames in flight come next (M4). See the [roadmap](docs/roadmap.md) and the
+**M4 (0.4.0) — frames.** Adapters of Vulkan, D3D12 and the null backend; devices; buffers,
+textures, views and samplers; shader modules validated by naga on every backend; bind groups,
+pipeline layouts, render and compute pipelines with a pipeline cache and compilation on
+pragma.core's async pool; command encoders with render and compute passes and copies, recorded in
+parallel as frame-graph tasks and validated as a whole at submission. Frames: surfaces from any
+`raw-window-handle` window (the crate opens none) with configure / acquire / present and
+resize handling; submission fences and a bounded number of frames in flight; deferred
+destruction; a bounded staging belt for uploads, uploads produced on pragma.core's blocking pool,
+and asynchronous readback. The null backend executes copies, clears and resolves byte for byte
+like a GPU and has a headless surface. `cargo run --example rhi_sim` runs the whole slice on every
+adapter. Hardening comes next (M5). See the [roadmap](docs/roadmap.md) and the
 [architecture](docs/architecture.md).
 
 ## Building

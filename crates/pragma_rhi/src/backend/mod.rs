@@ -11,8 +11,10 @@ mod texel;
 
 use core::num::NonZeroU64;
 use core::ops::Range;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-pub(crate) use gpu::{GpuDevice, map_backend};
+pub(crate) use gpu::{GpuDevice, capabilities as gpu_surface_capabilities, map_backend};
 pub(crate) use null::NullDevice;
 
 use gpu::{GpuBinding, GpuContext};
@@ -53,6 +55,48 @@ pub(crate) type BindGroupObj = Obj<wgpu::BindGroup>;
 pub(crate) type PipelineLayoutObj = Obj<wgpu::PipelineLayout>;
 pub(crate) type RenderPipelineObj = Obj<wgpu::RenderPipeline>;
 pub(crate) type ComputePipelineObj = Obj<wgpu::ComputePipeline>;
+
+/// How a buffer is mapped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MapMode {
+    Read,
+    Write,
+}
+
+/// Where an asynchronous buffer mapping stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MapState {
+    Pending,
+    Ready,
+    Failed,
+}
+
+/// The state of one buffer mapping, shared with wgpu's map callback.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MapFlag(Arc<AtomicU8>);
+
+impl MapFlag {
+    const PENDING: u8 = 0;
+    const READY: u8 = 1;
+    const FAILED: u8 = 2;
+
+    pub(crate) fn resolve(&self, ok: bool) {
+        let state = if ok { Self::READY } else { Self::FAILED };
+        self.0.store(state, Ordering::Release);
+    }
+
+    pub(crate) fn reset(&self) {
+        self.0.store(Self::PENDING, Ordering::Release);
+    }
+
+    pub(crate) fn state(&self) -> MapState {
+        match self.0.load(Ordering::Acquire) {
+            Self::READY => MapState::Ready,
+            Self::FAILED => MapState::Failed,
+            _ => MapState::Pending,
+        }
+    }
+}
 
 fn wrong_backend() -> RhiError {
     RhiError::backend("a resource of another backend reached this device")
@@ -480,11 +524,101 @@ impl DeviceBackend {
 
     // -- queue ----------------------------------------------------------------------------
 
-    /// Runs validated command buffers, in order, as one submission.
-    pub(crate) fn execute(&mut self, batches: &[Batch<'_>]) -> Result<(), RhiError> {
+    /// Runs validated command buffers, in order, as our submission `index`.
+    pub(crate) fn execute(&mut self, batches: &[Batch<'_>], index: u64) -> Result<(), RhiError> {
         match self {
-            Self::Wgpu(device) => device.execute(batches),
-            Self::Null(device) => device.execute(batches),
+            Self::Wgpu(device) => device.execute(batches, index),
+            Self::Null(device) => device.execute(batches, index),
+        }
+    }
+
+    /// The last submission the GPU has finished; with `wait`, blocks until submission `wait`
+    /// is finished first.
+    pub(crate) fn poll(&mut self, wait: Option<u64>) -> Result<u64, RhiError> {
+        match self {
+            Self::Wgpu(device) => device.poll(wait),
+            Self::Null(device) => device.poll(wait),
+        }
+    }
+
+    /// Blocks until every mapping requested so far has resolved.
+    pub(crate) fn wait_for_maps(&self) -> Result<(), RhiError> {
+        match self {
+            Self::Wgpu(device) => device.wait_for_maps(),
+            Self::Null(device) => device.alive(),
+        }
+    }
+
+    /// Releases a swapchain texture's object: the surface owns a GPU's swapchain images, the
+    /// null backend allocated the memory at acquisition.
+    pub(crate) fn release_surface_texture(&mut self, obj: TextureObj, bytes: u64) {
+        match (self, obj) {
+            (Self::Null(device), Obj::Null(id)) => device.release(id, bytes),
+            (Self::Wgpu(_) | Self::Null(_), _) => {}
+        }
+    }
+
+    // -- mapped buffers -------------------------------------------------------------------
+
+    /// A buffer created mapped for writing (`MAP_WRITE | COPY_SRC` staging).
+    pub(crate) fn create_mapped_buffer(
+        &mut self,
+        label: Option<&str>,
+        info: &BufferInfo,
+    ) -> Result<BufferObj, RhiError> {
+        match self {
+            Self::Wgpu(device) => device.create_mapped_buffer(label, info).map(Obj::Wgpu),
+            Self::Null(device) => device.allocate(info.size).map(Obj::Null),
+        }
+    }
+
+    pub(crate) fn write_mapped(
+        &mut self,
+        obj: &BufferObj,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), RhiError> {
+        match self {
+            Self::Wgpu(_) => GpuDevice::write_mapped(wgpu_of(obj)?, offset, data),
+            Self::Null(device) => device.write(null_of(obj)?, offset, data),
+        }
+    }
+
+    pub(crate) fn read_mapped(
+        &self,
+        obj: &BufferObj,
+        offset: u64,
+        size: u64,
+    ) -> Result<Vec<u8>, RhiError> {
+        match self {
+            Self::Wgpu(_) => GpuDevice::read_mapped(wgpu_of(obj)?, offset, size),
+            Self::Null(device) => device.read(null_of(obj)?, offset, size),
+        }
+    }
+
+    pub(crate) fn unmap(&mut self, obj: &BufferObj) {
+        if let (Self::Wgpu(_), Obj::Wgpu(buffer)) = (self, obj) {
+            buffer.unmap();
+        }
+    }
+
+    /// Requests a mapping; `flag` resolves in a later poll (at once on the null backend).
+    pub(crate) fn map_async(
+        &mut self,
+        obj: &BufferObj,
+        mode: MapMode,
+        offset: u64,
+        size: u64,
+        flag: &MapFlag,
+    ) -> Result<(), RhiError> {
+        flag.reset();
+        match self {
+            Self::Wgpu(device) => device.map_async(wgpu_of(obj)?, mode, offset, size, flag),
+            Self::Null(device) => {
+                device.alive()?;
+                flag.resolve(true);
+                Ok(())
+            }
         }
     }
 
@@ -501,7 +635,7 @@ impl DeviceBackend {
         }
     }
 
-    /// Waits for every submission and reads a validated range of a buffer.
+    /// Waits for every submission so far and reads a validated range of a buffer.
     pub(crate) fn read_buffer(
         &mut self,
         obj: &BufferObj,

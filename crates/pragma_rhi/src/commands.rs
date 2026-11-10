@@ -544,6 +544,16 @@ impl CommandEncoder {
             out_of_memory: self.out_of_memory,
         }
     }
+
+    /// Continues recording a finished buffer (the device's pending uploads after a rejected
+    /// submission).
+    pub(crate) fn from_buffer(buffer: CommandBuffer) -> Self {
+        Self {
+            label: buffer.label,
+            commands: buffer.commands,
+            out_of_memory: buffer.out_of_memory,
+        }
+    }
 }
 
 /// Recorded commands, ready for [`Device::submit`](crate::Device::submit). `Send` and `Sync`;

@@ -805,13 +805,14 @@ dependencies = [
 
 [[package]]
 name = "pragma_rhi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bitflags",
  "naga",
  "pollster",
  "pragma_core",
  "proptest",
+ "raw-window-handle",
  "thiserror",
  "wgpu",
 ]

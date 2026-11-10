@@ -19,7 +19,16 @@
 //! The null backend executes copies, clears and resolves exactly like a GPU, so readback tests
 //! run without one.
 //!
-//! No wgpu type appears in the public API (DECISIONS.md #8). The crate is at milestone M3; see
+//! Frames: every submission returns a [`SubmissionIndex`] fence; [`Device::begin_frame`] bounds
+//! how many frames are in flight, [`PerFrame`] holds per-frame resources, and destroyed buffers
+//! and textures keep their memory until the submissions that may use them retire. Uploads go
+//! through a bounded staging belt ([`Device::upload_buffer`], [`Device::upload_texture`], or
+//! produced on a pragma.core blocking pool with [`Device::upload_async`]); readback can be
+//! asynchronous ([`Device::read_buffer_async`]). A [`Surface`] from any window with a
+//! `raw-window-handle` (or a null surface for tests) is configured, acquired and presented by the
+//! device; an outdated swapchain is a [`SurfaceError::Outdated`], never a panic.
+//!
+//! No wgpu type appears in the public API (DECISIONS.md #8). The crate is at milestone M4; see
 //! `docs/roadmap.md` for what comes next and `docs/architecture.md` for the design.
 //!
 //! ```
@@ -59,6 +68,7 @@ mod binding;
 mod commands;
 mod device;
 mod error;
+mod frame;
 mod graph;
 mod handle;
 mod instance;
@@ -68,6 +78,8 @@ mod pipeline;
 mod resource;
 mod shader;
 mod submit;
+mod surface;
+mod upload;
 
 pub use binding::{
     BindGroupDescriptor, BindGroupEntry, BindGroupInfo, BindGroupLayoutDescriptor,
@@ -83,6 +95,7 @@ pub use commands::{
 };
 pub use device::{Device, DeviceDescriptor};
 pub use error::RhiError;
+pub use frame::{FrameInfo, MAX_FRAMES_IN_FLIGHT, PerFrame, SubmissionIndex};
 pub use graph::{CommandGraph, CommandGraphBuilder};
 pub use handle::{
     BindGroup, BindGroupLayout, Buffer, ComputePipeline, PipelineLayout, RenderPipeline,
@@ -111,3 +124,8 @@ pub use shader::{
     EntryPointInfo, ShaderModuleDescriptor, ShaderModuleInfo, ShaderSource, ShaderStage,
     ShaderStages, SourceLocation,
 };
+pub use surface::{
+    CompositeAlphaMode, PresentMode, Surface, SurfaceCapabilities, SurfaceConfiguration,
+    SurfaceError, SurfaceFrame,
+};
+pub use upload::{PendingReadback, PendingUpload, UploadConfig, UploadStats, UploadTarget};

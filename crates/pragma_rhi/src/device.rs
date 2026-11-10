@@ -15,6 +15,7 @@ use crate::binding::{
     check_buffer_binding, check_sampler_binding, check_texture_binding, validate_bind_group_layout,
     validate_pipeline_layout,
 };
+use crate::frame::{Garbage, Timeline};
 use crate::handle::Table;
 use crate::pending::{Finished, Pending};
 use crate::pipeline::{
@@ -22,6 +23,8 @@ use crate::pipeline::{
 };
 use crate::resource::{validate_buffer, validate_sampler, validate_texture, validate_texture_view};
 use crate::shader::{self, EntryReflection, ParsedShader};
+use crate::surface::SurfaceError;
+use crate::upload::{Belt, Readbacks, UploadConfig};
 use crate::{
     Backend, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupInfo, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindGroupLayoutInfo, BindingResource,
@@ -35,12 +38,29 @@ use crate::{
 };
 
 /// Describes a [`Device`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeviceDescriptor<'a> {
     /// A debug label, passed to the backend.
     pub label: Option<&'a str>,
     /// The limits the device validates every descriptor against; at most the adapter's.
     pub required_limits: Limits,
+    /// How many frames may be in flight at once, 1 to
+    /// [`MAX_FRAMES_IN_FLIGHT`](crate::MAX_FRAMES_IN_FLIGHT); 2 by default. See
+    /// [`Device::begin_frame`].
+    pub frames_in_flight: u32,
+    /// The upload belt's chunk size and memory bound ([`Device::upload_buffer`]).
+    pub upload: UploadConfig,
+}
+
+impl Default for DeviceDescriptor<'_> {
+    fn default() -> Self {
+        Self {
+            label: None,
+            required_limits: Limits::default(),
+            frames_in_flight: 2,
+            upload: UploadConfig::default(),
+        }
+    }
 }
 
 // Dependency counters (`users`) count the bind groups, pipeline layouts and pipelines that
@@ -50,15 +70,17 @@ pub struct DeviceDescriptor<'a> {
 #[derive(Debug)]
 pub(crate) struct BufferEntry {
     pub(crate) info: BufferInfo,
-    users: u32,
+    pub(crate) users: u32,
     pub(crate) obj: BufferObj,
 }
 
 #[derive(Debug)]
 pub(crate) struct TextureEntry {
     pub(crate) info: TextureInfo,
-    bytes: u64,
-    views: u32,
+    pub(crate) bytes: u64,
+    pub(crate) views: u32,
+    /// A swapchain texture: it goes with its surface frame, not with `destroy_texture`.
+    pub(crate) surface: bool,
     pub(crate) obj: TextureObj,
 }
 
@@ -227,14 +249,28 @@ pub struct Device {
     pub(crate) render_pipelines: Table<RenderPipeline, RenderEntry>,
     pub(crate) compute_pipelines: Table<ComputePipeline, ComputeEntry>,
     cache: PipelineCache,
+    /// The device's id, as its handles carry it.
+    pub(crate) id: u32,
+    pub(crate) timeline: Timeline,
+    pub(crate) belt: Belt,
+    pub(crate) readbacks: Readbacks,
 }
 
 impl Device {
-    pub(crate) fn new(backend: DeviceBackend, limits: Limits) -> Result<Self, RhiError> {
+    pub(crate) fn new(
+        backend: DeviceBackend,
+        desc: &DeviceDescriptor<'_>,
+    ) -> Result<Self, RhiError> {
+        let timeline = Timeline::new(desc.frames_in_flight)?;
+        let belt = Belt::new(desc.upload)?;
         let id = next_device_id()?;
         Ok(Self {
-            limits,
+            limits: desc.required_limits,
             backend,
+            id,
+            timeline,
+            belt,
+            readbacks: Readbacks::default(),
             next_serial: 0,
             buffers: Table::new(id),
             textures: Table::new(id),
@@ -349,18 +385,21 @@ impl Device {
         Ok(self.buffers.get(buffer)?.info)
     }
 
-    /// Destroys a buffer; the handle and its copies go stale.
+    /// Destroys a buffer; the handle and its copies go stale at once. Its memory is freed when
+    /// every submission made so far has retired (deferred destruction, see [`Self::poll`]);
+    /// pending uploads are submitted first ([`Self::flush_uploads`]).
     ///
     /// # Errors
     ///
     /// [`RhiError::ResourceInUse`] while a bind group uses it, [`RhiError::StaleHandle`] (also
-    /// on a second destroy), [`RhiError::ForeignHandle`], [`RhiError::DeviceLost`].
+    /// on a second destroy), [`RhiError::ForeignHandle`], [`RhiError::DeviceLost`]; the errors
+    /// of [`Self::flush_uploads`].
     pub fn destroy_buffer(&mut self, buffer: Buffer) -> Result<(), RhiError> {
         self.alive()?;
         in_use(ResourceKind::Buffer, self.buffers.get(buffer)?.users)?;
+        self.flush_uploads()?;
         let entry = self.buffers.remove(buffer)?;
-        self.backend.destroy_buffer(entry.obj, &entry.info);
-        Ok(())
+        self.bury(Garbage::Buffer(entry.obj, entry.info))
     }
 
     // -- textures -------------------------------------------------------------------------
@@ -379,6 +418,7 @@ impl Device {
             info,
             bytes,
             views: 0,
+            surface: false,
             obj,
         })
     }
@@ -393,18 +433,22 @@ impl Device {
         Ok(self.textures.get(texture)?.info)
     }
 
-    /// Destroys a texture.
+    /// Destroys a texture; deferred like [`Self::destroy_buffer`].
     ///
     /// # Errors
     ///
-    /// [`RhiError::ResourceInUse`] while the texture has views; otherwise as
-    /// [`Self::destroy_buffer`].
+    /// [`RhiError::ResourceInUse`] while the texture has views; [`SurfaceError::SurfaceTexture`]
+    /// for a surface frame's texture; otherwise as [`Self::destroy_buffer`].
     pub fn destroy_texture(&mut self, texture: Texture) -> Result<(), RhiError> {
         self.alive()?;
-        in_use(ResourceKind::Texture, self.textures.get(texture)?.views)?;
+        let entry = self.textures.get(texture)?;
+        if entry.surface {
+            return Err(SurfaceError::SurfaceTexture.into());
+        }
+        in_use(ResourceKind::Texture, entry.views)?;
+        self.flush_uploads()?;
         let entry = self.textures.remove(texture)?;
-        self.backend.destroy_texture(entry.obj, entry.bytes);
-        Ok(())
+        self.bury(Garbage::Texture(entry.obj, entry.bytes))
     }
 
     // -- texture views --------------------------------------------------------------------

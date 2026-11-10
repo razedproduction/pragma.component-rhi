@@ -143,6 +143,50 @@ pub(super) const fn texture_format(format: TextureFormat) -> wgpu::TextureFormat
     }
 }
 
+/// The formats of ours a surface may report; `None` for the rest.
+pub(super) const fn texture_format_from_wgpu(format: wgpu::TextureFormat) -> Option<TextureFormat> {
+    Some(match format {
+        wgpu::TextureFormat::R8Unorm => TextureFormat::R8Unorm,
+        wgpu::TextureFormat::Rg8Unorm => TextureFormat::Rg8Unorm,
+        wgpu::TextureFormat::Rgba8Unorm => TextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureFormat::Bgra8Unorm => TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::R16Float => TextureFormat::R16Float,
+        wgpu::TextureFormat::Rgba16Float => TextureFormat::Rgba16Float,
+        wgpu::TextureFormat::R32Float => TextureFormat::R32Float,
+        wgpu::TextureFormat::Rg32Float => TextureFormat::Rg32Float,
+        wgpu::TextureFormat::Rgba32Float => TextureFormat::Rgba32Float,
+        wgpu::TextureFormat::R32Uint => TextureFormat::R32Uint,
+        wgpu::TextureFormat::Depth32Float => TextureFormat::Depth32Float,
+        wgpu::TextureFormat::Depth24Plus => TextureFormat::Depth24Plus,
+        wgpu::TextureFormat::Depth24PlusStencil8 => TextureFormat::Depth24PlusStencil8,
+        _ => return None,
+    })
+}
+
+pub(super) fn texture_usages_from_wgpu(usage: wgpu::TextureUsages) -> TextureUsages {
+    map_flags(
+        usage,
+        &[
+            (wgpu::TextureUsages::COPY_SRC, TextureUsages::COPY_SRC),
+            (wgpu::TextureUsages::COPY_DST, TextureUsages::COPY_DST),
+            (
+                wgpu::TextureUsages::TEXTURE_BINDING,
+                TextureUsages::TEXTURE_BINDING,
+            ),
+            (
+                wgpu::TextureUsages::STORAGE_BINDING,
+                TextureUsages::STORAGE_BINDING,
+            ),
+            (
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+                TextureUsages::RENDER_ATTACHMENT,
+            ),
+        ],
+    )
+}
+
 pub(super) const fn view_dimension(dimension: TextureViewDimension) -> wgpu::TextureViewDimension {
     match dimension {
         TextureViewDimension::D1 => wgpu::TextureViewDimension::D1,

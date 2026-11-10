@@ -114,7 +114,7 @@ fn submit_one(
 ) -> Result<(), RhiError> {
     let mut encoder = CommandEncoder::new(Some("test"));
     record(&mut encoder);
-    device.submit([encoder.finish()])
+    device.submit([encoder.finish()]).map(drop)
 }
 
 // ---------------------------------------------------------------------------------------------

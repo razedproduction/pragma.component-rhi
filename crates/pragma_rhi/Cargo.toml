@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 wgpu = { workspace = true }
 naga = { workspace = true }
 pollster = { workspace = true }
+raw-window-handle = { workspace = true }
 bitflags = { workspace = true }
 
 [dev-dependencies]

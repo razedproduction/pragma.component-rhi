@@ -26,6 +26,10 @@ pub(crate) struct NullDevice {
     next_id: NullId,
     /// The bytes of every resource written so far, by id.
     memory: HashMap<NullId, Vec<u8>>,
+    /// How many submissions the null "GPU" keeps in flight when polled without waiting.
+    latency: u32,
+    submitted: u64,
+    completed: u64,
 }
 
 const fn oom(bytes: u64) -> RhiError {
@@ -40,18 +44,39 @@ fn byte_range(offset: u64, len: u64) -> Result<core::ops::Range<usize>, RhiError
 }
 
 impl NullDevice {
-    pub(crate) fn new(budget: u64) -> Self {
+    pub(crate) fn new(budget: u64, latency: u32) -> Self {
         Self {
             budget,
             allocated: 0,
             lost: false,
             next_id: 0,
             memory: HashMap::new(),
+            latency,
+            submitted: 0,
+            completed: 0,
         }
     }
 
     pub(crate) const fn is_lost(&self) -> bool {
         self.lost
+    }
+
+    pub(crate) const fn alive(&self) -> Result<(), RhiError> {
+        if self.lost {
+            Err(RhiError::DeviceLost)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Submissions execute at once; they *complete* `latency` submissions later, or when
+    /// waited for, so frames in flight and deferred destruction behave as on a GPU.
+    pub(crate) fn poll(&mut self, wait: Option<u64>) -> Result<u64, RhiError> {
+        self.alive()?;
+        let settled = self.submitted.saturating_sub(u64::from(self.latency));
+        let waited = wait.map_or(0, |index| index.min(self.submitted));
+        self.completed = self.completed.max(settled).max(waited);
+        Ok(self.completed)
     }
 
     pub(crate) fn lose(&mut self) {
@@ -124,7 +149,7 @@ impl NullDevice {
 
     // -- execution ------------------------------------------------------------------------
 
-    pub(crate) fn execute(&mut self, batches: &[Batch<'_>]) -> Result<(), RhiError> {
+    pub(crate) fn execute(&mut self, batches: &[Batch<'_>], index: u64) -> Result<(), RhiError> {
         if self.lost {
             return Err(RhiError::DeviceLost);
         }
@@ -133,6 +158,7 @@ impl NullDevice {
                 self.run(op)?;
             }
         }
+        self.submitted = index;
         Ok(())
     }
 
@@ -348,7 +374,7 @@ mod tests {
 
     #[test]
     fn budget_is_enforced() {
-        let mut device = NullDevice::new(100);
+        let mut device = NullDevice::new(100, 0);
         assert_eq!(device.allocate(60), Ok(0));
         assert_eq!(
             device.allocate(41),
@@ -365,7 +391,7 @@ mod tests {
 
     #[test]
     fn memory_reads_zero_until_written() {
-        let mut device = NullDevice::new(1 << 20);
+        let mut device = NullDevice::new(1 << 20, 0);
         let id = device.allocate(16).unwrap_or_default();
         assert_eq!(device.read(id, 0, 8), Ok(vec![0; 8]));
         assert_eq!(device.write(id, 4, &[1, 2, 3, 4]), Ok(()));

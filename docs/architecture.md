@@ -1,6 +1,6 @@
 # Architecture
 
-Status: §2, §3, §3a, §4 and §5 are implemented (M1–M3); the rest is the intended design. Sections marked
+Status: §2, §3, §3a, §4, §4a and §5 are implemented (M1–M4); the rest is the intended design. Sections marked
 *open* are decided in the milestone named there and recorded in `DECISIONS.md`.
 
 ## 1. Place in the stack
@@ -47,8 +47,10 @@ Resources that reference others pin them (DECISIONS #14): a bind group pins its 
 buffers, samplers and views it binds; a pipeline layout pins its bind group layouts; a pipeline
 pins its pipeline layout. Destroying a pinned resource is `RhiError::ResourceInUse`.
 
-Destruction is immediate before M4. From M4 it is **deferred**: a resource is freed only after the
-last GPU frame that used it retired.
+Destruction is **deferred** (DECISIONS #17): the handle goes stale at once, but a buffer's or
+texture's memory is freed only when every submission made before the destroy has retired (the
+null backend's memory accounting shows it). Views, samplers, bind groups and pipelines are
+reference-counted by wgpu and need no graveyard.
 
 ## 3a. Shaders and pipelines
 
@@ -88,14 +90,43 @@ and is what M5's benchmarks will measure.
 
 The null backend keeps the bytes of buffers and textures (DECISIONS #16) and executes queue
 writes, copies, buffer clears, attachment clears, resolves and discards with the results a GPU
-produces; draws and dispatches are validated and change nothing. Readback is blocking before
-M4 (`read_buffer`, `read_texture`).
+produces; draws and dispatches are validated and change nothing. Readback is blocking
+(`read_buffer`, `read_texture`) or asynchronous (`read_*_async` → `poll_readback`).
+
+## 4a. Frames, surfaces and uploads
+
+Every submission gets a `SubmissionIndex` (1, 2, …). The device learns what the GPU finished
+only when it polls — `poll`, `wait`, `begin_frame`, a blocking read — through wgpu's
+`on_submitted_work_done` callbacks; the null backend executes at once but reports completion
+`NullConfig::latency` submissions later, so frame pacing is testable without a GPU. A frame is
+the work between `begin_frame` and `end_frame`; its fence is the last submission in it.
+`begin_frame` blocks until at most `frames_in_flight - 1` (default 2, at most 8) earlier frames
+are still in flight, then retires what finished; the frame's `slot` selects its `PerFrame`
+resources, whose previous user has retired by then (DECISIONS #17).
+
+A `Surface` is made by the instance from anything with `raw-window-handle`'s window and display
+handles; the crate opens no windows (DECISIONS #18). The device validates a configuration
+against the surface's capabilities and its limits — wgpu panics on a bad one — and resolves the
+`Auto` modes. An acquired frame is an ordinary `Texture` (with a default view) in the device's
+table, so commands, validation and copies treat it like any texture; `present` or `discard_frame`
+makes both handles stale. An outdated or lost swapchain is a `SurfaceError` from
+`acquire_frame`; the engine reconfigures and retries. The null surface plays a window of a given
+size, reports `Outdated` after `set_null_size`, and keeps the last presented texels.
+
+Uploads go through a **staging belt** (DECISIONS #19): `MAP_WRITE | COPY_SRC` chunks, mapped on
+the CPU, bounded by `UploadConfig::capacity`. An upload is validated, copied into a chunk at once
+and recorded as a copy that runs first in the next submission; chunks are unmapped when
+submitted and mapped again once their submission retires. A full belt reuses retired chunks,
+drops idle ones, then waits for the oldest chunk in flight (`UploadStats::stalls`).
+`upload_async` runs the producer of the bytes (decoding, file I/O) on pragma.core's blocking pool
+and uploads when polled, so the device keeps a single owner.
 
 ## 5. Failure model
 
 GPU work fails in ways a CPU library does not: device loss (driver reset, removal), out of video
 memory, an out-of-date surface. All of them are `RhiError` variants returned from the call that
-observed them; none is a panic or an abort. After device loss every handle of that device returns
+observed them (`RhiError::Surface(SurfaceError::Outdated)` for the surface); none is a panic or an
+abort. After device loss every handle of that device returns
 `RhiError::DeviceLost` until the engine creates a new device.
 
 ## 6. Reliability rules

@@ -4,6 +4,50 @@ The format is [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioni
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-10
+
+### Added
+
+- Surfaces (M4, DECISIONS #18): `Instance::create_surface` from any window with
+  `raw-window-handle` 0.6 window and display handles (the crate opens no windows) and
+  `Instance::create_null_surface` for headless tests; `Adapter::surface_capabilities` /
+  `Device::surface_capabilities`; `Device::configure_surface` validates a
+  `SurfaceConfiguration` (format, usages, size, `PresentMode`, `CompositeAlphaMode`, frame
+  latency) and resolves the `Auto` modes; `Device::acquire_frame` returns a `SurfaceFrame` whose
+  texture and view are ordinary handles; `Device::present`, `Device::discard_frame`. New
+  `RhiError::Surface(SurfaceError)` with `Outdated`, `Lost`, `Timeout`, `Occluded` and the
+  protocol errors. The null surface simulates resizes and loss and keeps the presented texels.
+- Frames in flight (DECISIONS #17): `Device::submit` returns a `SubmissionIndex`;
+  `Device::poll`, `wait`, `wait_idle`, `is_complete`, `last_submission`;
+  `Device::begin_frame` / `end_frame` bound the frames in flight
+  (`DeviceDescriptor::frames_in_flight`, default 2, `MAX_FRAMES_IN_FLIGHT` = 8) and return a
+  `FrameInfo`; `PerFrame<T>` for per-frame resources. New `RhiError::Frame`.
+  `NullConfig::latency` keeps null submissions in flight for tests.
+- Deferred destruction: `destroy_buffer` / `destroy_texture` free memory only after every
+  submission made before them has retired; `Device::deferred_destructions`.
+- Uploads (DECISIONS #19): a bounded staging belt (`DeviceDescriptor::upload`, `UploadConfig`)
+  behind `Device::upload_buffer` and `Device::upload_texture` (any row stride, repacked);
+  `Device::flush_uploads`, `Device::upload_stats` (`UploadStats`); `Device::upload_async` with
+  `poll_upload` / `wait_upload` produces the bytes on a pragma.core executor's blocking pool
+  (`UploadTarget`, `PendingUpload`).
+- Asynchronous readback: `Device::read_buffer_async`, `read_texture_async`, `poll_readback`,
+  `wait_readback` (`PendingReadback`); a dropped readback's staging is freed on the next poll.
+- Tests: fences, frame pacing, deferred destruction, belt bounds and recycling, async uploads and
+  readback on the null backend; uploads and readbacks byte-identical between the null backend and
+  every GPU adapter present (checked on Vulkan, D3D12 and WARP); the surface protocol on null
+  surfaces. Window surfaces were checked locally on real windows (Vulkan, D3D12, WARP).
+
+### Changed
+
+- `Device::submit` returns `Result<SubmissionIndex, RhiError>` instead of `Result<(), RhiError>`.
+- `DeviceDescriptor` has `frames_in_flight` and `upload`; it no longer derives `Default` but
+  implements it (`frames_in_flight: 2`). `NullConfig` has `latency`.
+- `read_buffer` and `read_texture` submit pending uploads first; `read_texture` uses the
+  asynchronous path and waits.
+- `RhiError::Task` covers every blocking-pool task (pipeline compilations and async uploads).
+- Example `rhi_sim` paces its frames, uploads through the belt and reads back asynchronously;
+  its hashes are unchanged.
+
 ## [0.3.0] - 2026-11-09
 
 ### Added

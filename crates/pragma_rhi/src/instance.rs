@@ -76,6 +76,11 @@ pub struct NullConfig {
     /// The device memory, in bytes, a null device may allocate before it reports
     /// [`RhiError::OutOfMemory`].
     pub memory_budget: u64,
+    /// How many submissions a null device keeps "in flight" when polled without waiting:
+    /// commands run at once, but a submission is reported complete only `latency` submissions
+    /// later (or when waited for), so frame pacing and deferred destruction can be tested.
+    /// 0 (the default) completes every submission at once.
+    pub latency: u32,
 }
 
 impl Default for NullConfig {
@@ -83,6 +88,7 @@ impl Default for NullConfig {
         Self {
             limits: Limits::default(),
             memory_budget: 1 << 30,
+            latency: 0,
         }
     }
 }
@@ -109,8 +115,8 @@ impl InstanceDescriptor {
 
 /// The entry point: enumerates adapters.
 pub struct Instance {
-    wgpu: Option<wgpu::Instance>,
-    null: Option<NullConfig>,
+    pub(crate) wgpu: Option<wgpu::Instance>,
+    pub(crate) null: Option<NullConfig>,
 }
 
 impl core::fmt::Debug for Instance {
@@ -166,7 +172,7 @@ impl Instance {
 }
 
 #[derive(Debug, Clone)]
-enum AdapterInner {
+pub(crate) enum AdapterInner {
     Wgpu(wgpu::Adapter),
     Null(NullConfig),
 }
@@ -176,7 +182,7 @@ enum AdapterInner {
 pub struct Adapter {
     info: AdapterInfo,
     limits: Limits,
-    inner: AdapterInner,
+    pub(crate) inner: AdapterInner,
 }
 
 impl Adapter {
@@ -245,9 +251,9 @@ impl Adapter {
                 &desc.required_limits,
             )?),
             AdapterInner::Null(config) => {
-                DeviceBackend::Null(NullDevice::new(config.memory_budget))
+                DeviceBackend::Null(NullDevice::new(config.memory_budget, config.latency))
             }
         };
-        Device::new(backend, desc.required_limits)
+        Device::new(backend, desc)
     }
 }

@@ -12,7 +12,7 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 | M1 | 0.1.0 | Instance, devices and resources; the null backend | ✅ |
 | M2 | 0.2.0 | Shaders, bind groups, pipelines | ✅ |
 | M3 | 0.3.0 | Command recording on the pragma.core frame graph, vertical slice | ✅ |
-| M4 | 0.4.0 | Surfaces, frames in flight, uploads, deferred destruction | 📋 |
+| M4 | 0.4.0 | Surfaces, frames in flight, uploads, deferred destruction | ✅ |
 | M5 | 0.5.0 | Hardening: golden images, fuzz, benches, semver | 📋 |
 | M6 | 1.0.0 | Stable API, publication | 📋 |
 
@@ -73,13 +73,23 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 - [x] Example `rhi_sim`: offscreen render + compute, readback, an image hash identical on 1 and N
       workers and on the null and software backends where they overlap (copies, clears)
 
-## M4 — Frames (0.4.0)
+## M4 — Frames (0.4.0) ✅
 
-- [ ] Surfaces from `raw-window-handle` (the crate opens no windows), swapchain configure / acquire
-      / present, resize and out-of-date handling
-- [ ] Frames in flight: fences, per-frame resources, a bounded frame latency
-- [ ] Upload ring (staging belt) and async uploads through pragma.core
-- [ ] Deferred destruction: resources freed only after the GPU frame that used them retired
+- [x] **Decision:** fences, frames in flight and deferred destruction (DECISIONS #17)
+- [x] **Decision:** surfaces behind `raw-window-handle`, swapchain textures as table textures
+      (DECISIONS #18)
+- [x] **Decision:** a bounded staging belt, async uploads and async readback (DECISIONS #19)
+- [x] Surfaces from `raw-window-handle` (the crate opens no windows), swapchain configure / acquire
+      / present, resize and out-of-date handling; a null surface for headless tests; checked
+      locally against real windows on Vulkan, D3D12 and WARP
+- [x] Frames in flight: fences (`SubmissionIndex`, `poll` / `wait`), per-frame resources
+      (`PerFrame`), a bounded frame latency (`begin_frame` / `end_frame`); the null backend's
+      `latency` keeps submissions in flight for tests
+- [x] Upload ring (staging belt) with a memory bound and recycling, async uploads through
+      pragma.core's blocking pool, asynchronous buffer and texture readback
+- [x] Deferred destruction: buffers and textures freed only after the submissions that may use
+      them retired
+- [x] Example `rhi_sim` runs on frames, the belt and async readback with unchanged hashes
 
 ## M5 — Hardening (0.5.0)
 

@@ -5,6 +5,7 @@ use pragma_core::tasks::AsyncError;
 
 use crate::handle::ResourceKind;
 use crate::shader::{ShaderStage, SourceLocation};
+use crate::surface::SurfaceError;
 
 /// An error of an RHI operation.
 ///
@@ -127,9 +128,23 @@ pub enum RhiError {
         /// The rule that was broken.
         reason: String,
     },
-    /// A pipeline compilation task did not finish: it was cancelled, it panicked, or the
-    /// blocking pool refused it.
-    #[error("pipeline compilation task failed: {0}")]
+    /// A surface operation failed — the swapchain is outdated or lost, the window is occluded —
+    /// or the surface is not in the state the call needs.
+    #[error("surface: {0}")]
+    Surface(SurfaceError),
+    /// The frame protocol was broken: [`Device::begin_frame`](crate::Device::begin_frame)
+    /// twice, [`Device::end_frame`](crate::Device::end_frame) without a frame, a frame count
+    /// out of range.
+    #[error("frame: {reason}")]
+    #[non_exhaustive]
+    Frame {
+        /// The rule that was broken.
+        reason: &'static str,
+    },
+    /// A task on a pragma.core executor's blocking pool (a pipeline compilation, an
+    /// asynchronous upload) did not finish: it was cancelled, it panicked, or the blocking pool
+    /// refused it.
+    #[error("blocking-pool task failed: {0}")]
     Task(AsyncError),
     /// The frame graph of a [`CommandGraph`](crate::CommandGraph) failed to build or to run:
     /// an unordered access conflict, a cycle, a missing resource, a panicking task.
@@ -145,7 +160,17 @@ pub enum RhiError {
     },
 }
 
+impl From<SurfaceError> for RhiError {
+    fn from(error: SurfaceError) -> Self {
+        Self::Surface(error)
+    }
+}
+
 impl RhiError {
+    pub(crate) const fn frame(reason: &'static str) -> Self {
+        Self::Frame { reason }
+    }
+
     pub(crate) const fn invalid(resource: ResourceKind, reason: &'static str) -> Self {
         Self::InvalidDescriptor { resource, reason }
     }

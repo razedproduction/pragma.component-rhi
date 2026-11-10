@@ -1,5 +1,6 @@
-//! The vertical slice of roadmap M3: device → resources → pipelines → commands recorded in
-//! parallel on the pragma.core frame graph → submission → readback.
+//! The vertical slice of roadmaps M3 and M4: device → resources → pipelines → commands recorded
+//! in parallel on the pragma.core frame graph → submission → readback, in frames paced by
+//! `begin_frame` / `end_frame`, with uploads through the staging belt and asynchronous readback.
 //!
 //! Every adapter of the machine (and the null one) runs the same three frames of a small
 //! headless scene — a compute pass moves particles, a render pass draws triangles into an
@@ -381,16 +382,30 @@ fn run_frames(
     let atlas = resources.get::<Atlas>().ok_or("no atlas")?.0;
     let backdrop = resources.get::<Backdrop>().ok_or("no backdrop")?.1;
     let snapshot = resources.get::<Snapshot>().ok_or("no snapshot")?.0;
-    device.write_buffer(particles, 0, &initial_particles())?;
+    // Lands at the start of the first frame's submission.
+    device.upload_buffer(particles, 0, &initial_particles())?;
     for _ in 0..FRAMES {
+        device.begin_frame()?;
         let buffers = graph.record(&pool, resources)?;
         device.submit(buffers)?;
+        device.end_frame()?;
     }
+    // Readbacks run on the GPU's timeline; the frame thread only collects them.
     let full = extent(SIZE, SIZE);
-    let mut transfer = device.read_texture(TexelCopyTextureInfo::new(atlas), full)?;
-    transfer.extend(device.read_texture(TexelCopyTextureInfo::new(backdrop), full)?);
-    let mut render = device.read_texture(TexelCopyTextureInfo::new(snapshot), full)?;
-    render.extend(device.read_buffer(particles, 0, u64::from(PARTICLES) * PARTICLE_BYTES)?);
+    let readbacks = [
+        device.read_texture_async(TexelCopyTextureInfo::new(atlas), full)?,
+        device.read_texture_async(TexelCopyTextureInfo::new(backdrop), full)?,
+        device.read_texture_async(TexelCopyTextureInfo::new(snapshot), full)?,
+        device.read_buffer_async(particles, 0, u64::from(PARTICLES) * PARTICLE_BYTES)?,
+    ];
+    let mut bytes = Vec::new();
+    for readback in readbacks {
+        bytes.push(device.wait_readback(readback)?);
+    }
+    let [atlas, backdrop, snapshot, particles] =
+        <[Vec<u8>; 4]>::try_from(bytes).map_err(|_| "four readbacks")?;
+    let transfer = [atlas, backdrop].concat();
+    let render = [snapshot, particles].concat();
     Ok((hash(&transfer), hash(&render)))
 }
 
