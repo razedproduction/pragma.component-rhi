@@ -12,8 +12,10 @@ cargo deny check
 cargo run -p pragma_rhi --example rhi_golden -- --adapter warp
 ```
 
-A change that moves rendered pixels on purpose updates the golden hashes with `--bless` (one
-adapter at a time); the lavapipe lines can be taken from the `golden-lavapipe` CI artifact.
+The golden hashes are those of the CI runners (DECISIONS #26): a local WARP on another Windows
+build may differ on a scene (on Windows 10, `textured`). A change that moves rendered pixels on
+purpose takes the new lines from the `golden-warp` / `golden-lavapipe` CI artifacts rather than
+blessing locally.
 Fuzz targets (Linux, nightly): `cargo +nightly fuzz run handles` (also `descriptors`,
 `transfers`); a crash reproduces as a `tests/oracle.rs` input through the same decoder.
 
