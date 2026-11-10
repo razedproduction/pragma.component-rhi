@@ -1,6 +1,6 @@
 # Architecture
 
-Status: §2, §3, §3a, §4, §4a, §5 and §6 are implemented (M1–M5); the rest is the intended design. Sections marked
+Status: §2, §3, §3a, §4, §4a, §5 and §6 are implemented (M1–M5; the API is stable from 1.0.0, M6); the rest is the intended design. Sections marked
 *open* are decided in the milestone named there and recorded in `DECISIONS.md`.
 
 ## 1. Place in the stack

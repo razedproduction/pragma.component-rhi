@@ -14,7 +14,7 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 | M3 | 0.3.0 | Command recording on the pragma.core frame graph, vertical slice | ✅ |
 | M4 | 0.4.0 | Surfaces, frames in flight, uploads, deferred destruction | ✅ |
 | M5 | 0.5.0 | Hardening: golden images, fuzz, benches, semver | ✅ |
-| M6 | 1.0.0 | Stable API, publication | 📋 |
+| M6 | 1.0.0 | Stable API, publication | ✅ |
 
 ---
 
@@ -104,10 +104,17 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 - [x] Device-loss recovery tests on the null backend (DECISIONS #22)
 - [x] `cargo-semver-checks` in CI against the PR base; version 0.5.0 (DECISIONS #25)
 
-## M6 — 1.0 (1.0.0)
+## M6 — 1.0 (1.0.0) ✅
 
-- [ ] API review, rustdoc with examples, an "Integrating into an engine" section
-- [ ] Publication on crates.io
+- [x] **Decisions:** the API review — no renames, `#[non_exhaustive]` on growing enums and output
+      structs, plain descriptors (DECISIONS #27), `pub use pragma_core` (#28), embedding
+      documentation in the crate docs (#29), 1.0.0 directly with only `pragma_rhi` published (#30)
+- [x] API review, rustdoc with examples on every public type and the main methods, "Semver
+      guarantees" and "Integrating into an engine" sections in the crate docs with a compiled
+      renderer skeleton (resize, device-loss recovery)
+- [x] crates.io metadata: version 1.0.0, `publish` enabled, the crate's own README and LICENSE,
+      `documentation`; `cargo package -p pragma_rhi` verified
+- [ ] Release: the tag `v1.0.0` and `cargo publish -p pragma_rhi` (the owner)
 
 ---
 

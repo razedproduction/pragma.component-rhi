@@ -15,6 +15,24 @@ use crate::binding::StorageTextureAccess;
 use crate::{RhiError, TextureFormat, TextureViewDimension};
 
 /// The source of a [`ShaderModule`](crate::ShaderModule).
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let wgsl = device.create_shader_module(&ShaderModuleDescriptor {
+///     label: Some("wgsl"),
+///     source: ShaderSource::Wgsl("@compute @workgroup_size(1) fn main() {}"),
+/// })?;
+/// assert_eq!(device.shader_module_info(wgsl)?.entry_points[0].name, "main");
+/// // SPIR-V is validated like WGSL; these words are no module.
+/// let result = device.create_shader_module(&ShaderModuleDescriptor {
+///     label: Some("spir-v"),
+///     source: ShaderSource::SpirV(&[0x0723_0203, 0]),
+/// });
+/// assert!(matches!(result, Err(RhiError::Shader { .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ShaderSource<'a> {
@@ -33,6 +51,23 @@ impl Default for ShaderSource<'_> {
 }
 
 /// Describes a [`ShaderModule`](crate::ShaderModule).
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let module = device.create_shader_module(&ShaderModuleDescriptor {
+///     label: Some("fullscreen"),
+///     source: ShaderSource::Wgsl(
+///         "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+///              let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+///              return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+///          }",
+///     ),
+/// })?;
+/// assert_eq!(device.shader_module_info(module)?.entry_points[0].stage, ShaderStage::Vertex);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ShaderModuleDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -43,6 +78,13 @@ pub struct ShaderModuleDescriptor<'a> {
 
 bitflags! {
     /// A set of shader stages, for example the visibility of a binding.
+    ///
+    /// ```
+    /// use pragma_rhi::{ShaderStage, ShaderStages};
+    ///
+    /// assert_eq!(ShaderStages::VERTEX_FRAGMENT, ShaderStages::VERTEX | ShaderStages::FRAGMENT);
+    /// assert!(ShaderStages::VERTEX_FRAGMENT.contains(ShaderStage::Fragment.as_stages()));
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     pub struct ShaderStages: u8 {
         /// The vertex stage.
@@ -57,6 +99,27 @@ bitflags! {
 }
 
 /// One shader stage.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let module = device.create_shader_module(&ShaderModuleDescriptor {
+///     label: None,
+///     source: ShaderSource::Wgsl(
+///         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(); }
+///          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+///     ),
+/// })?;
+/// let stages: Vec<ShaderStage> = device
+///     .shader_module_info(module)?
+///     .entry_points
+///     .iter()
+///     .map(|entry| entry.stage)
+///     .collect();
+/// assert_eq!(stages, [ShaderStage::Vertex, ShaderStage::Fragment]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum ShaderStage {
@@ -91,6 +154,21 @@ impl fmt::Display for ShaderStage {
 }
 
 /// A position in WGSL source text.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let error = device
+///     .create_shader_module(&ShaderModuleDescriptor {
+///         label: Some("broken"),
+///         source: ShaderSource::Wgsl("@compute @workgroup_size(1)\nfn main() {\n    let x = ;\n}"),
+///     })
+///     .unwrap_err();
+/// let RhiError::Shader { location: Some(at), .. } = error else { panic!("{error}") };
+/// assert_eq!(at.line, 3);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct SourceLocation {
@@ -101,6 +179,21 @@ pub struct SourceLocation {
 }
 
 /// An entry point of a shader module.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let module = device.create_shader_module(&ShaderModuleDescriptor {
+///     label: None,
+///     source: ShaderSource::Wgsl("@compute @workgroup_size(8, 8) fn blur() {}"),
+/// })?;
+/// let info = device.shader_module_info(module)?;
+/// let blur = &info.entry_points[0];
+/// assert_eq!((blur.name.as_str(), blur.stage), ("blur", ShaderStage::Compute));
+/// assert_eq!(blur.workgroup_size, Some([8, 8, 1]));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct EntryPointInfo {
@@ -114,6 +207,16 @@ pub struct EntryPointInfo {
 }
 
 /// A live shader module's properties.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let module = device.create_shader_module(&ShaderModuleDescriptor::default())?;
+/// // An empty WGSL module is valid and has no entry points.
+/// assert!(device.shader_module_info(module)?.entry_points.is_empty());
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct ShaderModuleInfo {

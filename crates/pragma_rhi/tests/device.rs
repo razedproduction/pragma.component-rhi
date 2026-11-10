@@ -51,10 +51,7 @@ fn required_limits_are_checked_against_the_adapter() {
         .remove(0);
     let desc = DeviceDescriptor {
         label: None,
-        required_limits: Limits {
-            max_buffer_size: u64::MAX,
-            ..Limits::default()
-        },
+        required_limits: limits_with_max_buffer_size(u64::MAX),
         ..DeviceDescriptor::default()
     };
     assert!(matches!(
@@ -74,10 +71,7 @@ fn device_limits_not_the_adapters_bound_descriptors() {
     let mut device = adapter
         .request_device(&DeviceDescriptor {
             label: None,
-            required_limits: Limits {
-                max_buffer_size: 1024,
-                ..Limits::default()
-            },
+            required_limits: limits_with_max_buffer_size(1024),
             ..DeviceDescriptor::default()
         })
         .expect("a null device");
@@ -228,4 +222,11 @@ fn gpu_adapters_create_and_destroy_resources() {
         assert_eq!(device.create_buffer(&buffer(4)), Err(RhiError::DeviceLost));
         eprintln!("checked {name}");
     }
+}
+
+/// `Limits` is `#[non_exhaustive]`: outside the crate it is built from the defaults and changed.
+fn limits_with_max_buffer_size(bytes: u64) -> Limits {
+    let mut limits = Limits::default();
+    limits.max_buffer_size = bytes;
+    limits
 }

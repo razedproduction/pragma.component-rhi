@@ -33,6 +33,25 @@ struct Recording {
 }
 
 /// Describes a [`CommandGraph`]; see [`CommandGraph::builder`].
+///
+/// ```
+/// use pragma_rhi::{CommandGraph, RhiError};
+///
+/// struct Shadows;
+/// struct Lighting;
+///
+/// let mut builder = CommandGraph::builder().ordered();
+/// builder.task("cull", |t| t.writes::<Shadows>(), |_ctx| {});
+/// builder.record("shadows", |t| t.reads::<Shadows>().writes::<Lighting>(), |_ctx, _encoder| Ok(()));
+/// builder.record("lighting", |t| t.reads::<Lighting>(), |_ctx, _encoder| Ok(()));
+/// let graph = builder.build()?;
+/// assert_eq!(graph.recordings().collect::<Vec<_>>(), ["shadows", "lighting"]);
+/// // Two recordings with the same name are rejected at build time.
+/// let mut twice = CommandGraph::builder();
+/// twice.record("a", |t| t, |_, _| Ok(())).record("a", |t| t, |_, _| Ok(()));
+/// assert!(matches!(twice.build(), Err(RhiError::Graph(_))));
+/// # Ok::<(), RhiError>(())
+/// ```
 pub struct CommandGraphBuilder {
     inner: FrameGraphBuilder,
     recordings: Vec<Recording>,

@@ -6,6 +6,18 @@ use core::marker::PhantomData;
 use crate::RhiError;
 
 /// The kind of a resource, as reported in errors.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 4, usage: BufferUsages::COPY_DST })?;
+/// device.destroy_buffer(buffer)?;
+/// let error = device.write_buffer(buffer, 0, &[0; 4]).unwrap_err();
+/// assert!(matches!(error, RhiError::StaleHandle { resource: ResourceKind::Buffer, .. }));
+/// assert_eq!(device.live(ResourceKind::Buffer), 0);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum ResourceKind {
@@ -70,7 +82,34 @@ macro_rules! handle {
         /// A `Copy` generational id (12 bytes), cheap to store in ECS components. It does not
         /// own the resource: destruction is explicit, through the [`Device`](crate::Device) that
         /// created it, and using the handle afterwards returns
-        /// [`RhiError::StaleHandle`](crate::RhiError::StaleHandle).
+        /// [`RhiError::StaleHandle`](crate::RhiError::StaleHandle). The `create_*` methods of
+        /// [`Device`](crate::Device) show how each kind is made.
+        ///
+        #[doc = concat!(
+            "```
+",
+            "use std::collections::HashMap;
+",
+            "use pragma_rhi::", stringify!($name), ";
+",
+            "
+",
+            "// Handles are plain values: `Copy`, `Send`, hashable, ordered.
+",
+            "struct Component(", stringify!($name), ");
+",
+            "let by_name: HashMap<&str, ", stringify!($name), "> = HashMap::new();
+",
+            "fn send<T: Send + Sync + Copy + Ord + std::hash::Hash>() {}
+",
+            "send::<", stringify!($name), ">();
+",
+            "assert_eq!(size_of::<", stringify!($name), ">(), 12);
+",
+            "# let _ = (by_name, |c: Component| c.0);
+",
+            "```",
+        )]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(RawHandle);
 

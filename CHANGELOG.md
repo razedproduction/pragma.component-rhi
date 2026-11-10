@@ -4,6 +4,31 @@ The format is [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioni
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-10
+
+The first crates.io release (M6, DECISIONS #30): the API of 0.5.0, reviewed and documented
+(0.1.0–0.5.0 were never released separately).
+
+### Added
+
+- `pub use pragma_core`: the `pragma_core` the crate is built with (DECISIONS #28).
+- Crate documentation (DECISIONS #27, #29): the semver guarantees and an "Integrating into an
+  engine" section with a compiled renderer skeleton (frame loop, resize, device-loss recovery);
+  rustdoc examples on every public type, the free constants and the main methods of `Instance`,
+  `Adapter`, `Device` and `CommandEncoder` — 155 doctests, all on the null backend.
+- crates.io metadata: `documentation`, publishing enabled.
+
+### Changed
+
+- **Breaking:** `#[non_exhaustive]` on the enums that will gain variants and were still
+  exhaustive — `BufferBindingType`, `SamplerBindingType`, `TextureSampleType`,
+  `StorageTextureAccess`, `TextureViewDimension`, `TextureAspect`, `AddressMode`, `BlendFactor`,
+  `PrimitiveTopology`, `LoadOp` — and on `Limits`, which outside the crate is now built from
+  `Limits::default()` or `Adapter::limits()` and changed field by field (DECISIONS #27). Matches
+  on these enums need a wildcard arm. Nothing was renamed or removed (`cargo semver-checks`
+  against 0.5.0 reports only these attributes).
+- The version is 1.0.0.
+
 ## [0.5.0] - 2026-11-10
 
 ### Added

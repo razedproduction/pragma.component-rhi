@@ -734,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "pragma_rhi"
-version = "0.4.0"
+version = "1.0.0"
 dependencies = [
  "bitflags",
  "naga",

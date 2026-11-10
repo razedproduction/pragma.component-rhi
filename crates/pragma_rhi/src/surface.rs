@@ -22,6 +22,15 @@ use crate::{
 };
 
 /// How presented frames reach the display.
+///
+/// ```
+/// use pragma_rhi::{PresentMode, SurfaceConfiguration};
+///
+/// // No vsync where the surface supports it; the `Auto*` modes fall back to what it has.
+/// let config = SurfaceConfiguration { present_mode: PresentMode::AutoNoVsync, ..SurfaceConfiguration::default() };
+/// assert_eq!(SurfaceConfiguration::default().present_mode, PresentMode::Fifo);
+/// # let _ = config;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum PresentMode {
@@ -41,6 +50,14 @@ pub enum PresentMode {
 }
 
 /// How the compositor blends a presented frame's alpha.
+///
+/// ```
+/// use pragma_rhi::{CompositeAlphaMode, SurfaceConfiguration};
+///
+/// // A transparent overlay window composited with premultiplied alpha.
+/// let overlay = SurfaceConfiguration { alpha_mode: CompositeAlphaMode::PreMultiplied, ..SurfaceConfiguration::default() };
+/// # let _ = overlay;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum CompositeAlphaMode {
@@ -59,6 +76,25 @@ pub enum CompositeAlphaMode {
 
 /// What a surface supports on an adapter or a device. No formats means it cannot present
 /// there at all.
+///
+/// ```
+/// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, RhiError, TextureUsages};
+///
+/// let instance = Instance::new(&InstanceDescriptor::null());
+/// let surface = instance.create_null_surface(640, 480)?;
+/// // Choose an adapter that can present to the window.
+/// let adapter = instance
+///     .adapters()
+///     .into_iter()
+///     .find(|adapter| adapter.surface_capabilities(&surface).is_supported())
+///     .ok_or(RhiError::DeviceLost)?;
+/// let device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let caps = device.surface_capabilities(&surface);
+/// assert!(caps.usages.contains(TextureUsages::RENDER_ATTACHMENT));
+/// let format = caps.formats[0];
+/// # let _ = format;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub struct SurfaceCapabilities {
@@ -82,6 +118,32 @@ impl SurfaceCapabilities {
 }
 
 /// Configures a [`Surface`] for a device ([`Device::configure_surface`]).
+///
+/// ```
+/// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, RhiError, SurfaceConfiguration, SurfaceError};
+///
+/// let instance = Instance::new(&InstanceDescriptor::null());
+/// let mut surface = instance.create_null_surface(800, 600)?;
+/// let mut device = instance.adapters().remove(0).request_device(&DeviceDescriptor::default())?;
+/// let caps = device.surface_capabilities(&surface);
+/// let config = SurfaceConfiguration {
+///     format: caps.formats[0],
+///     width: 800,
+///     height: 600,
+///     ..SurfaceConfiguration::default()
+/// };
+/// device.configure_surface(&mut surface, &config)?;
+/// // `Auto` modes are resolved to what the surface supports.
+/// let applied = surface.configuration().ok_or(RhiError::DeviceLost)?;
+/// assert_eq!((applied.width, applied.height, applied.format), (800, 600, config.format));
+/// // A zero-sized swapchain (a minimized window) cannot be configured.
+/// let minimized = SurfaceConfiguration { width: 0, ..config };
+/// assert!(matches!(
+///     device.configure_surface(&mut surface, &minimized),
+///     Err(RhiError::Surface(SurfaceError::InvalidConfiguration(_)))
+/// ));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SurfaceConfiguration {
     /// The usages of the swapchain textures; within [`SurfaceCapabilities::usages`].
@@ -116,6 +178,27 @@ impl Default for SurfaceConfiguration {
 
 /// Why a surface operation failed, or what state the surface is in that the call does not
 /// allow.
+///
+/// ```
+/// use pragma_rhi::{Device, RhiError, Surface, SurfaceConfiguration, SurfaceError};
+///
+/// // The usual reaction to a failed acquire in a frame loop.
+/// fn acquire(device: &mut Device, surface: &mut Surface, config: &SurfaceConfiguration) -> Result<bool, RhiError> {
+///     match device.acquire_frame(surface) {
+///         Ok(_frame) => Ok(true),
+///         // The window was resized or the swapchain lost: configure again, skip this frame.
+///         Err(RhiError::Surface(SurfaceError::Outdated | SurfaceError::Lost)) => {
+///             device.configure_surface(surface, config)?;
+///             Ok(false)
+///         }
+///         // Minimized or a slow compositor: skip this frame.
+///         Err(RhiError::Surface(SurfaceError::Timeout | SurfaceError::Occluded)) => Ok(false),
+///         Err(other) => Err(other),
+///     }
+/// }
+/// # let _ = acquire;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum SurfaceError {
@@ -158,6 +241,22 @@ pub enum SurfaceError {
 
 /// An acquired frame: render into [`Self::view`] (or copy into [`Self::texture`]), submit, then
 /// [`Device::present`].
+///
+/// ```
+/// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, RhiError, SurfaceConfiguration};
+///
+/// let instance = Instance::new(&InstanceDescriptor::null());
+/// let mut surface = instance.create_null_surface(4, 4)?;
+/// let mut device = instance.adapters().remove(0).request_device(&DeviceDescriptor::default())?;
+/// let config = SurfaceConfiguration { width: 4, height: 4, ..SurfaceConfiguration::default() };
+/// device.configure_surface(&mut surface, &config)?;
+/// let frame = device.acquire_frame(&mut surface)?;
+/// assert_eq!(device.texture_info(frame.texture)?.size.width, 4);
+/// assert!(!frame.suboptimal);
+/// // A frame that is not presented has to be discarded before the next acquire.
+/// device.discard_frame(&mut surface)?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct SurfaceFrame {
@@ -469,6 +568,15 @@ impl Instance {
     /// # Errors
     ///
     /// [`SurfaceError::Unsupported`] when the instance has no null backend.
+    ///
+    /// ```
+    /// use pragma_rhi::{Instance, InstanceDescriptor};
+    ///
+    /// // Headless presentation for tests and CI: no window, no GPU.
+    /// let instance = Instance::new(&InstanceDescriptor::null());
+    /// let surface = instance.create_null_surface(1920, 1080).expect("the null backend is enabled");
+    /// assert!(surface.is_null() && surface.configuration().is_none());
+    /// ```
     pub fn create_null_surface(&self, width: u32, height: u32) -> Result<Surface, RhiError> {
         if self.null.is_none() {
             return Err(SurfaceError::Unsupported.into());
@@ -655,6 +763,24 @@ impl Device {
     /// [`RhiError::ResourceInUse`] while the frame's texture has views other than
     /// [`SurfaceFrame::view`] or that view is in a bind group; [`RhiError::DeviceLost`];
     /// [`RhiError::Backend`].
+    ///
+    /// ```
+    /// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, RhiError, SurfaceConfiguration};
+    ///
+    /// let instance = Instance::new(&InstanceDescriptor::null());
+    /// let mut surface = instance.create_null_surface(2, 2)?;
+    /// let mut device = instance.adapters().remove(0).request_device(&DeviceDescriptor::default())?;
+    /// device.configure_surface(&mut surface, &SurfaceConfiguration { width: 2, height: 2, ..SurfaceConfiguration::default() })?;
+    /// for _ in 0..3 {
+    ///     let frame = device.acquire_frame(&mut surface)?;
+    ///     // ... record and submit commands drawing into `frame.view` ...
+    ///     device.present(&mut surface)?;
+    ///     // The frame's texture went stale with the present.
+    ///     assert!(device.texture_info(frame.texture).is_err());
+    /// }
+    /// assert_eq!(surface.presents(), 3);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn present(&mut self, surface: &mut Surface) -> Result<(), RhiError> {
         self.end_surface_frame(surface, true)
     }

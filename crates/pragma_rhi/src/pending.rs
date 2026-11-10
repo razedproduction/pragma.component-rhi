@@ -137,6 +137,46 @@ impl<K, I, O> fmt::Debug for Pending<K, I, O> {
 /// [`Device::poll_render_pipeline`](crate::Device::poll_render_pipeline) or
 /// [`Device::wait_render_pipeline`](crate::Device::wait_render_pipeline). Dropping it discards
 /// the result.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// # use pragma_core::jobs::{PoolConfig, ThreadPool};
+/// # use pragma_core::tasks::{AsyncConfig, Executor};
+/// # let pool = ThreadPool::new(PoolConfig::default().with_workers(2))?;
+/// # let executor = Executor::new(&pool, AsyncConfig::default())?;
+/// let targets = [Some(TextureFormat::Rgba8Unorm.into())];
+/// let desc = RenderPipelineDescriptor {
+///     label: Some("compiled on the pool"),
+///     layout,
+///     vertex: VertexState { module, entry_point: Some("vs"), buffers: &[] },
+///     primitive: PrimitiveState::default(),
+///     depth_stencil: None,
+///     multisample: MultisampleState::default(),
+///     fragment: Some(FragmentState { module, entry_point: Some("fs"), targets: &targets }),
+/// };
+/// let mut pending = device.compile_render_pipeline(&desc, &executor)?;
+/// // In a frame loop: poll once per frame and keep drawing the old pipeline until it is ready.
+/// let pipeline = loop {
+///     if let Some(result) = device.poll_render_pipeline(&mut pending) {
+///         break result?;
+///     }
+///     std::thread::yield_now();
+/// };
+/// assert!(device.render_pipeline_info(pipeline).is_ok());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug)]
 #[must_use = "a compiled pipeline is installed only by polling or waiting on it"]
 pub struct PendingRenderPipeline(
@@ -152,6 +192,32 @@ impl PendingRenderPipeline {
 }
 
 /// A compute pipeline being compiled; see [`PendingRenderPipeline`].
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// # use pragma_core::jobs::{PoolConfig, ThreadPool};
+/// # use pragma_core::tasks::{AsyncConfig, Executor};
+/// # let pool = ThreadPool::new(PoolConfig::default().with_workers(2))?;
+/// # let executor = Executor::new(&pool, AsyncConfig::default())?;
+/// let desc = ComputePipelineDescriptor { label: Some("culling"), layout, module, entry_point: Some("cs") };
+/// let pending = device.compile_compute_pipeline(&desc, &executor)?;
+/// // Outside pool work (a loading screen), waiting is allowed.
+/// let pipeline = device.wait_compute_pipeline(pending)?;
+/// assert!(device.compute_pipeline_info(pipeline).is_ok());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug)]
 #[must_use = "a compiled pipeline is installed only by polling or waiting on it"]
 pub struct PendingComputePipeline(

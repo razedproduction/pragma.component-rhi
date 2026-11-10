@@ -1193,6 +1193,25 @@ impl Device {
     /// [`RhiError::OutOfMemory`] for a recording that ran out of memory;
     /// [`RhiError::DeviceLost`]; [`RhiError::Backend`]. A rejected submission keeps the
     /// pending uploads for the next one.
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let usage = BufferUsages::COPY_SRC | BufferUsages::COPY_DST;
+    /// let a = device.create_buffer(&BufferDescriptor { label: None, size: 16, usage })?;
+    /// let b = device.create_buffer(&BufferDescriptor { label: None, size: 16, usage })?;
+    /// let mut good = CommandEncoder::new(Some("good"));
+    /// good.copy_buffer_to_buffer(a, 0, b, 0, 16);
+    /// let mut bad = CommandEncoder::new(Some("bad"));
+    /// bad.copy_buffer_to_buffer(a, 0, b, 0, 17); // past the end
+    /// // One broken command rejects the whole submission; nothing ran.
+    /// let error = device.submit([good.finish(), bad.finish()]).unwrap_err();
+    /// assert!(matches!(error, RhiError::InvalidCommand { .. }));
+    /// assert!(error.to_string().contains("bad"));
+    /// assert_eq!(device.last_submission(), None);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn submit(
         &mut self,
         command_buffers: impl IntoIterator<Item = CommandBuffer>,
@@ -1272,6 +1291,21 @@ impl Device {
     /// [`RhiError::InvalidCommand`] (`write_buffer`) for a missing usage, a misaligned or
     /// out-of-bounds range; the handle's errors; [`RhiError::DeviceLost`];
     /// [`RhiError::Backend`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let uniforms = device.create_buffer(&BufferDescriptor {
+    ///     label: Some("camera"),
+    ///     size: 64,
+    ///     usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+    /// })?;
+    /// let view_projection = [0u8; 64];
+    /// device.write_buffer(uniforms, 0, &view_projection)?;
+    /// assert_eq!(device.read_buffer(uniforms, 0, 64)?, view_projection);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn write_buffer(
         &mut self,
         buffer: Buffer,
@@ -1311,6 +1345,23 @@ impl Device {
     /// [`RhiError::InvalidCommand`] (`read_buffer`) for a missing usage, a misaligned or
     /// out-of-bounds range; the handle's errors; [`RhiError::DeviceLost`];
     /// [`RhiError::Backend`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let buffer = device.create_buffer(&BufferDescriptor {
+    ///     label: None,
+    ///     size: 8,
+    ///     usage: BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+    /// })?;
+    /// device.write_buffer(buffer, 0, &[1, 2, 3, 4, 5, 6, 7, 8])?;
+    /// assert_eq!(device.read_buffer(buffer, 4, 4)?, [5, 6, 7, 8]);
+    /// // Without COPY_SRC or MAP_READ there is nothing to read from.
+    /// let hidden = device.create_buffer(&BufferDescriptor { label: None, size: 8, usage: BufferUsages::VERTEX })?;
+    /// assert!(matches!(device.read_buffer(hidden, 0, 8), Err(RhiError::InvalidCommand { .. })));
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn read_buffer(
         &mut self,
         buffer: Buffer,
@@ -1354,6 +1405,23 @@ impl Device {
     /// the texture cannot be copied from; [`RhiError::LimitExceeded`] when the padded region
     /// is larger than [`Limits::max_buffer_size`](crate::Limits::max_buffer_size); otherwise as
     /// [`Self::read_buffer`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let size = Extent3d { width: 3, height: 2, depth_or_array_layers: 1 };
+    /// let texture = device.create_texture(&TextureDescriptor {
+    ///     size,
+    ///     format: TextureFormat::R8Unorm,
+    ///     usage: TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
+    ///     ..TextureDescriptor::default()
+    /// })?;
+    /// device.upload_texture(TexelCopyTextureInfo::new(texture), &[1, 2, 3, 4, 5, 6], TexelCopyBufferLayout::default(), size)?;
+    /// // Rows come back without the copy padding.
+    /// assert_eq!(device.read_texture(TexelCopyTextureInfo::new(texture), size)?, [1, 2, 3, 4, 5, 6]);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn read_texture(
         &mut self,
         src: TexelCopyTextureInfo,

@@ -16,7 +16,28 @@ use crate::{
 // Binding types
 
 /// The kind of a buffer binding.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+///     label: Some("particles"),
+///     entries: &[BindGroupLayoutEntry {
+///         binding: 0,
+///         visibility: ShaderStages::COMPUTE,
+///         ty: BindingType::Buffer {
+///             ty: BufferBindingType::Storage { read_only: false },
+///             has_dynamic_offset: false,
+///             min_binding_size: None,
+///         },
+///     }],
+/// })?;
+/// assert_eq!(device.bind_group_layout_info(layout)?.entries.len(), 1);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum BufferBindingType {
     /// A uniform buffer (`var<uniform>`); the buffer needs [`BufferUsages::UNIFORM`].
     #[default]
@@ -30,7 +51,33 @@ pub enum BufferBindingType {
 }
 
 /// The kind of a sampler binding.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// // A shadow map: a depth texture read through a comparison sampler.
+/// let entries = [
+///     BindGroupLayoutEntry {
+///         binding: 0,
+///         visibility: ShaderStages::FRAGMENT,
+///         ty: BindingType::Texture {
+///             sample_type: TextureSampleType::Depth,
+///             view_dimension: TextureViewDimension::D2,
+///             multisampled: false,
+///         },
+///     },
+///     BindGroupLayoutEntry {
+///         binding: 1,
+///         visibility: ShaderStages::FRAGMENT,
+///         ty: BindingType::Sampler(SamplerBindingType::Comparison),
+///     },
+/// ];
+/// device.create_bind_group_layout(&BindGroupLayoutDescriptor { label: None, entries: &entries })?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum SamplerBindingType {
     /// A sampler that may filter (`sampler`).
     #[default]
@@ -42,7 +89,21 @@ pub enum SamplerBindingType {
 }
 
 /// What a sampled texture binding yields.
+///
+/// ```
+/// use pragma_rhi::{BindingType, TextureSampleType, TextureViewDimension};
+///
+/// // `texture_2d<u32>` in WGSL.
+/// let ty = BindingType::Texture {
+///     sample_type: TextureSampleType::Uint,
+///     view_dimension: TextureViewDimension::D2,
+///     multisampled: false,
+/// };
+/// assert_ne!(ty, BindingType::default());
+/// assert_eq!(TextureSampleType::default(), TextureSampleType::Float { filterable: true });
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TextureSampleType {
     /// Floats (`texture_*<f32>`); `filterable` lets a filtering sampler read it.
     Float {
@@ -64,7 +125,39 @@ impl Default for TextureSampleType {
 }
 
 /// How a shader accesses a storage texture.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// // `texture_storage_2d<r32float, read_write>` in a compute shader.
+/// let entry = BindGroupLayoutEntry {
+///     binding: 0,
+///     visibility: ShaderStages::COMPUTE,
+///     ty: BindingType::StorageTexture {
+///         access: StorageTextureAccess::ReadWrite,
+///         format: TextureFormat::R32Float,
+///         view_dimension: TextureViewDimension::D2,
+///     },
+/// };
+/// device.create_bind_group_layout(&BindGroupLayoutDescriptor { label: None, entries: &[entry] })?;
+///
+/// // Read-write access exists only for R32Float and R32Uint.
+/// let mut wrong = entry;
+/// wrong.ty = BindingType::StorageTexture {
+///     access: StorageTextureAccess::ReadWrite,
+///     format: TextureFormat::Rgba8Unorm,
+///     view_dimension: TextureViewDimension::D2,
+/// };
+/// let result = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+///     label: None,
+///     entries: &[wrong],
+/// });
+/// assert!(matches!(result, Err(RhiError::InvalidDescriptor { .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum StorageTextureAccess {
     /// `write` access.
     #[default]
@@ -76,6 +169,18 @@ pub enum StorageTextureAccess {
 }
 
 /// The type of one binding of a [`BindGroupLayout`].
+///
+/// ```
+/// use pragma_rhi::{BindGroupLayoutEntry, BindingType, ShaderStages};
+///
+/// // The default is a uniform buffer without a dynamic offset.
+/// let entry = BindGroupLayoutEntry {
+///     binding: 0,
+///     visibility: ShaderStages::VERTEX_FRAGMENT,
+///     ty: BindingType::default(),
+/// };
+/// assert!(matches!(entry.ty, BindingType::Buffer { has_dynamic_offset: false, .. }));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BindingType {
@@ -122,6 +227,21 @@ impl Default for BindingType {
 }
 
 /// One binding of a [`BindGroupLayout`].
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let entries = [
+///     BindGroupLayoutEntry { binding: 1, visibility: ShaderStages::FRAGMENT, ..Default::default() },
+///     BindGroupLayoutEntry { binding: 0, visibility: ShaderStages::VERTEX, ..Default::default() },
+/// ];
+/// let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor { label: None, entries: &entries })?;
+/// // The device keeps them sorted by binding number.
+/// let info = device.bind_group_layout_info(layout)?;
+/// assert_eq!(info.entries.iter().map(|e| e.binding).collect::<Vec<_>>(), [0, 1]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BindGroupLayoutEntry {
     /// The binding number (`@binding(n)`); less than
@@ -134,6 +254,20 @@ pub struct BindGroupLayoutEntry {
 }
 
 /// Describes a [`BindGroupLayout`].
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// // A binding number used twice is rejected before any backend sees the layout.
+/// let entry = BindGroupLayoutEntry { binding: 3, visibility: ShaderStages::COMPUTE, ..Default::default() };
+/// let result = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+///     label: Some("twice"),
+///     entries: &[entry, entry],
+/// });
+/// assert!(matches!(result, Err(RhiError::InvalidDescriptor { .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BindGroupLayoutDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -143,6 +277,15 @@ pub struct BindGroupLayoutDescriptor<'a> {
 }
 
 /// A live bind group layout's properties.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor::default())?;
+/// assert!(device.bind_group_layout_info(layout)?.entries.is_empty());
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct BindGroupLayoutInfo {
@@ -154,6 +297,29 @@ pub struct BindGroupLayoutInfo {
 // Bind groups
 
 /// A range of a buffer bound to a buffer binding.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+///     label: None,
+///     entries: &[BindGroupLayoutEntry { binding: 0, visibility: ShaderStages::VERTEX, ..Default::default() }],
+/// })?;
+/// let uniforms = device.create_buffer(&BufferDescriptor {
+///     label: Some("uniforms"),
+///     size: 1024,
+///     usage: BufferUsages::UNIFORM,
+/// })?;
+/// // The second 256-byte block; the offset is a multiple of `min_uniform_buffer_offset_alignment`.
+/// let range = BufferBinding { buffer: uniforms, offset: 256, size: core::num::NonZeroU64::new(256) };
+/// let group = device.create_bind_group(layout, &BindGroupDescriptor {
+///     label: None,
+///     entries: &[BindGroupEntry { binding: 0, resource: BindingResource::Buffer(range) }],
+/// })?;
+/// assert_eq!(device.bind_group_info(group)?.entries[0].resource, BindingResource::Buffer(range));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BufferBinding {
     /// The buffer.
@@ -165,6 +331,36 @@ pub struct BufferBinding {
 }
 
 /// A resource bound to one binding.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+///     label: None,
+///     entries: &[BindGroupLayoutEntry {
+///         binding: 0,
+///         visibility: ShaderStages::FRAGMENT,
+///         ty: BindingType::Sampler(SamplerBindingType::Filtering),
+///     }],
+/// })?;
+/// let sampler = device.create_sampler(&SamplerDescriptor::default())?;
+/// device.create_bind_group(layout, &BindGroupDescriptor {
+///     label: None,
+///     entries: &[BindGroupEntry { binding: 0, resource: BindingResource::Sampler(sampler) }],
+/// })?;
+/// // A buffer where the layout expects a sampler is an error.
+/// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 16, usage: BufferUsages::UNIFORM })?;
+/// let result = device.create_bind_group(layout, &BindGroupDescriptor {
+///     label: None,
+///     entries: &[BindGroupEntry {
+///         binding: 0,
+///         resource: BindingResource::Buffer(BufferBinding { buffer, offset: 0, size: None }),
+///     }],
+/// });
+/// assert!(result.is_err());
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BindingResource {
@@ -177,6 +373,20 @@ pub enum BindingResource {
 }
 
 /// One binding of a bind group.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+///     label: None,
+///     entries: &[BindGroupLayoutEntry { binding: 0, visibility: ShaderStages::VERTEX, ..Default::default() }],
+/// })?;
+/// // Every layout entry needs exactly one bind group entry.
+/// let result = device.create_bind_group(layout, &BindGroupDescriptor::default());
+/// assert!(matches!(result, Err(RhiError::InvalidDescriptor { .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BindGroupEntry {
     /// The binding number of the layout entry it fills.
@@ -187,6 +397,29 @@ pub struct BindGroupEntry {
 
 /// Describes a [`BindGroup`](crate::BindGroup); the layout is passed to
 /// [`Device::create_bind_group`](crate::Device::create_bind_group) alongside.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+///     label: None,
+///     entries: &[BindGroupLayoutEntry { binding: 0, visibility: ShaderStages::VERTEX, ..Default::default() }],
+/// })?;
+/// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 64, usage: BufferUsages::UNIFORM })?;
+/// let group = device.create_bind_group(layout, &BindGroupDescriptor {
+///     label: Some("camera"),
+///     entries: &[BindGroupEntry {
+///         binding: 0,
+///         resource: BindingResource::Buffer(BufferBinding { buffer, offset: 0, size: None }),
+///     }],
+/// })?;
+/// // The bind group pins what it binds: the buffer cannot be destroyed while it lives.
+/// assert!(matches!(device.destroy_buffer(buffer), Err(RhiError::ResourceInUse { .. })));
+/// device.destroy_bind_group(group)?;
+/// device.destroy_buffer(buffer)?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BindGroupDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -196,6 +429,30 @@ pub struct BindGroupDescriptor<'a> {
 }
 
 /// A live bind group's properties.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+///     label: None,
+///     entries: &[BindGroupLayoutEntry { binding: 0, visibility: ShaderStages::VERTEX, ..Default::default() }],
+/// })?;
+/// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 64, usage: BufferUsages::UNIFORM })?;
+/// let group = device.create_bind_group(layout, &BindGroupDescriptor {
+///     label: None,
+///     entries: &[BindGroupEntry {
+///         binding: 0,
+///         resource: BindingResource::Buffer(BufferBinding { buffer, offset: 0, size: None }),
+///     }],
+/// })?;
+/// let info = device.bind_group_info(group)?;
+/// assert_eq!(info.layout, layout);
+/// // `size: None` was resolved to the rest of the buffer.
+/// let resolved = BufferBinding { buffer, offset: 0, size: core::num::NonZeroU64::new(64) };
+/// assert_eq!(info.entries[0].resource, BindingResource::Buffer(resolved));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct BindGroupInfo {
@@ -209,6 +466,24 @@ pub struct BindGroupInfo {
 // Pipeline layouts
 
 /// Describes a [`PipelineLayout`](crate::PipelineLayout).
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let globals = device.create_bind_group_layout(&BindGroupLayoutDescriptor::default())?;
+/// let material = device.create_bind_group_layout(&BindGroupLayoutDescriptor::default())?;
+/// // Group 0 is `globals`, group 1 is `material`.
+/// let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+///     label: Some("forward"),
+///     bind_group_layouts: &[globals, material],
+/// })?;
+/// // The layout pins its bind group layouts.
+/// assert!(matches!(device.destroy_bind_group_layout(globals), Err(RhiError::ResourceInUse { .. })));
+/// device.destroy_pipeline_layout(layout)?;
+/// device.destroy_bind_group_layout(globals)?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct PipelineLayoutDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -219,6 +494,19 @@ pub struct PipelineLayoutDescriptor<'a> {
 }
 
 /// A live pipeline layout's properties.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let group = device.create_bind_group_layout(&BindGroupLayoutDescriptor::default())?;
+/// let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+///     label: None,
+///     bind_group_layouts: &[group],
+/// })?;
+/// assert_eq!(device.pipeline_layout_info(layout)?.bind_group_layouts, [group]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct PipelineLayoutInfo {

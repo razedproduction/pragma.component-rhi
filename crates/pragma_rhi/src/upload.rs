@@ -34,6 +34,17 @@ use crate::{
 const LABEL: &str = "pragma_rhi uploads";
 
 /// Sizes the upload belt ([`DeviceDescriptor::upload`](crate::DeviceDescriptor::upload)).
+///
+/// ```
+/// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, RhiError, UploadConfig};
+///
+/// // Streaming large textures: 4 MiB chunks, at most 128 MiB of staging memory.
+/// let upload = UploadConfig { chunk_size: 4 << 20, capacity: 128 << 20 };
+/// let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// let device = adapter.request_device(&DeviceDescriptor { upload, ..DeviceDescriptor::default() })?;
+/// assert_eq!(device.upload_stats().allocated, 0);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UploadConfig {
     /// The size of a staging chunk (1 MiB by default); larger uploads get a chunk of their
@@ -54,6 +65,19 @@ impl Default for UploadConfig {
 }
 
 /// The upload belt's state ([`Device::upload_stats`]).
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 1024, usage: BufferUsages::COPY_DST })?;
+/// device.upload_buffer(buffer, 0, &[1; 1024])?;
+/// let stats = device.upload_stats();
+/// assert_eq!((stats.chunks, stats.pending), (1, 1024));
+/// device.flush_uploads()?;
+/// assert_eq!(device.upload_stats().uploaded, 1024);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub struct UploadStats {
@@ -207,6 +231,20 @@ impl Belt {
 pub(crate) struct Readbacks(Vec<(Buffer, Arc<AtomicBool>)>);
 
 /// Where [`Device::upload_async`] puts the bytes it produced.
+///
+/// ```
+/// use pragma_rhi::{Extent3d, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, UploadTarget};
+///
+/// // Where `upload_async` puts the bytes it produces: here the whole of a 256 x 256 RGBA8 texture.
+/// fn whole(texture: Texture) -> UploadTarget {
+///     UploadTarget::Texture {
+///         texture: TexelCopyTextureInfo::new(texture),
+///         layout: TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
+///         size: Extent3d { width: 256, height: 256, depth_or_array_layers: 1 },
+///     }
+/// }
+/// # let _ = whole;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum UploadTarget {
@@ -231,6 +269,29 @@ pub enum UploadTarget {
 /// Bytes being produced on a pragma.core executor's blocking pool, to be uploaded when
 /// [`Device::poll_upload`] (or [`Device::wait_upload`]) sees them. Dropping it discards the
 /// upload.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # use pragma_core::jobs::{PoolConfig, ThreadPool};
+/// # use pragma_core::tasks::{AsyncConfig, Executor};
+/// # let pool = ThreadPool::new(PoolConfig::default().with_workers(2))?;
+/// # let executor = Executor::new(&pool, AsyncConfig::default())?;
+/// let mesh = device.create_buffer(&BufferDescriptor {
+///     label: Some("mesh"),
+///     size: 64,
+///     usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+/// })?;
+/// // Decode on the blocking pool; the bytes are staged when the device sees them.
+/// let pending = device.upload_async(UploadTarget::Buffer { buffer: mesh, offset: 0 }, &executor, || {
+///     Ok(vec![7; 64])
+/// })?;
+/// assert_eq!(pending.target(), UploadTarget::Buffer { buffer: mesh, offset: 0 });
+/// device.wait_upload(pending)?;
+/// assert_eq!(device.read_buffer(mesh, 0, 64)?, [7; 64]);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[must_use = "the bytes are uploaded only by polling or waiting on the upload"]
 pub struct PendingUpload {
     target: UploadTarget,
@@ -264,6 +325,27 @@ impl PendingUpload {
 /// [`Device::read_texture_async`], finished by [`Device::poll_readback`] or
 /// [`Device::wait_readback`]. Dropping it discards the result; the staging buffer is freed on
 /// a later poll.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let buffer = device.create_buffer(&BufferDescriptor {
+///     label: Some("results"),
+///     size: 16,
+///     usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+/// })?;
+/// device.write_buffer(buffer, 0, &[3; 16])?;
+/// let mut pending = device.read_buffer_async(buffer, 0, 16)?;
+/// // In a frame loop: poll once per frame; the bytes arrive when the copy retired.
+/// let bytes = loop {
+///     if let Some(bytes) = device.poll_readback(&mut pending) {
+///         break bytes?;
+///     }
+/// };
+/// assert_eq!(bytes, [3; 16]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[must_use = "the bytes arrive only by polling or waiting on the readback"]
 #[derive(Debug)]
 pub struct PendingReadback {
@@ -340,6 +422,22 @@ impl Device {
     /// out-of-bounds range; [`RhiError::LimitExceeded`] for more bytes than
     /// [`UploadConfig::capacity`]; the handle's errors; [`RhiError::OutOfMemory`];
     /// [`RhiError::DeviceLost`]; [`RhiError::Backend`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let vertices = device.create_buffer(&BufferDescriptor {
+    ///     label: Some("vertices"),
+    ///     size: 64,
+    ///     usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+    /// })?;
+    /// device.upload_buffer(vertices, 0, &[5; 64])?;
+    /// // The upload lands at the start of the next submission.
+    /// device.submit([])?;
+    /// assert_eq!(device.read_buffer(vertices, 0, 64)?, [5; 64]);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn upload_buffer(
         &mut self,
         buffer: Buffer,
@@ -394,6 +492,24 @@ impl Device {
     /// [`RhiError::InvalidCommand`] (`upload_texture` for a short `data` or a layout whose rows
     /// are too short, `copy_buffer_to_texture` for a region the texture cannot be copied to);
     /// otherwise as [`Self::upload_buffer`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let size = Extent3d { width: 2, height: 2, depth_or_array_layers: 1 };
+    /// let texture = device.create_texture(&TextureDescriptor {
+    ///     size,
+    ///     format: TextureFormat::Rgba8Unorm,
+    ///     usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
+    ///     ..TextureDescriptor::default()
+    /// })?;
+    /// // Tightly packed rows: no row alignment is needed for uploads.
+    /// let texels: Vec<u8> = (0..16).collect();
+    /// device.upload_texture(TexelCopyTextureInfo::new(texture), &texels, TexelCopyBufferLayout::default(), size)?;
+    /// assert_eq!(device.read_texture(TexelCopyTextureInfo::new(texture), size)?, texels);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn upload_texture(
         &mut self,
         dst: TexelCopyTextureInfo,
@@ -496,6 +612,19 @@ impl Device {
     /// # Errors
     ///
     /// As [`Self::submit`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// assert_eq!(device.flush_uploads()?, None);
+    /// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 16, usage: BufferUsages::COPY_DST })?;
+    /// device.upload_buffer(buffer, 0, &[1; 16])?;
+    /// // At the end of loading: make the uploads land without other commands.
+    /// let submission = device.flush_uploads()?.ok_or(RhiError::DeviceLost)?;
+    /// device.wait(submission)?;
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn flush_uploads(&mut self) -> Result<Option<SubmissionIndex>, RhiError> {
         if self.belt.encoder.is_none() {
             return Ok(None);
@@ -804,6 +933,24 @@ impl Device {
     /// be copied from or an empty one; [`RhiError::LimitExceeded`] when the padded region is
     /// larger than [`Limits::max_buffer_size`](crate::Limits::max_buffer_size); otherwise as
     /// [`Self::submit`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let size = Extent3d { width: 4, height: 1, depth_or_array_layers: 1 };
+    /// let texture = device.create_texture(&TextureDescriptor {
+    ///     size,
+    ///     format: TextureFormat::R8Unorm,
+    ///     usage: TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
+    ///     ..TextureDescriptor::default()
+    /// })?;
+    /// device.upload_texture(TexelCopyTextureInfo::new(texture), &[1, 2, 3, 4], TexelCopyBufferLayout::default(), size)?;
+    /// let pending = device.read_texture_async(TexelCopyTextureInfo::new(texture), size)?;
+    /// // A screenshot, a GPU picking result: read later without stalling the frame.
+    /// assert_eq!(device.wait_readback(pending)?, [1, 2, 3, 4]);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn read_texture_async(
         &mut self,
         src: TexelCopyTextureInfo,

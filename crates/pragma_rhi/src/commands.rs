@@ -20,6 +20,15 @@ use crate::{
 
 /// An RGBA color, as a render pass clears a color attachment with it. The channels are in the
 /// attachment's linear space; an sRGB attachment encodes them.
+///
+/// ```
+/// use pragma_rhi::Color;
+///
+/// // Channels are linear floats; an sRGB target encodes them on write.
+/// let sky = Color::new(0.1, 0.2, 0.4, 1.0);
+/// assert_eq!(Color::BLACK, Color::new(0.0, 0.0, 0.0, 1.0));
+/// # let _ = sky;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Color {
     /// Red.
@@ -48,7 +57,17 @@ impl Color {
 }
 
 /// What a render pass does with an attachment when it begins.
+///
+/// ```
+/// use pragma_rhi::{Color, LoadOp, Operations, StoreOp};
+///
+/// // Keep what an earlier pass drew and store the result.
+/// let keep: Operations<Color> = Operations { load: LoadOp::Load, store: StoreOp::Store };
+/// assert_eq!(keep, Operations::load());
+/// assert_eq!(Operations::clear(Color::WHITE).load, LoadOp::Clear(Color::WHITE));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum LoadOp<V> {
     /// Fills the attachment with a value.
     Clear(V),
@@ -57,6 +76,14 @@ pub enum LoadOp<V> {
 }
 
 /// What a render pass does with an attachment when it ends.
+///
+/// ```
+/// use pragma_rhi::{LoadOp, Operations, StoreOp};
+///
+/// // A depth buffer only needed during the pass: cleared, then discarded.
+/// let transient = Operations { load: LoadOp::Clear(1.0_f32), store: StoreOp::Discard };
+/// # let _ = transient;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum StoreOp {
     /// Keeps what the pass wrote.
@@ -67,6 +94,32 @@ pub enum StoreOp {
 }
 
 /// The load and store operations of one attachment aspect.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let target = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 2, height: 1, depth_or_array_layers: 1 },
+///     format: TextureFormat::Rgba8Unorm,
+///     usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+///     ..TextureDescriptor::default()
+/// })?;
+/// let view = device.create_texture_view(target, &TextureViewDescriptor::default())?;
+/// let mut encoder = CommandEncoder::new(Some("clear"));
+/// encoder.begin_render_pass(&RenderPassDescriptor {
+///     color_attachments: &[Some(RenderPassColorAttachment {
+///         view,
+///         resolve_target: None,
+///         ops: Operations::clear(Color::new(1.0, 0.0, 0.0, 1.0)),
+///     })],
+///     ..RenderPassDescriptor::default()
+/// });
+/// device.submit([encoder.finish()])?;
+/// let size = Extent3d { width: 2, height: 1, depth_or_array_layers: 1 };
+/// assert_eq!(device.read_texture(TexelCopyTextureInfo::new(target), size)?, [255, 0, 0, 255, 255, 0, 0, 255]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Operations<V> {
     /// At the beginning of the pass.
@@ -94,6 +147,36 @@ impl<V> Operations<V> {
 }
 
 /// A color attachment of a render pass.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// // Render at 4x MSAA and resolve into a single-sampled texture.
+/// let color = |samples: u32| TextureDescriptor {
+///     size: Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+///     sample_count: samples,
+///     format: TextureFormat::Rgba8Unorm,
+///     usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+///     ..TextureDescriptor::default()
+/// };
+/// let msaa = device.create_texture(&color(4))?;
+/// let resolved = device.create_texture(&color(1))?;
+/// let msaa_view = device.create_texture_view(msaa, &TextureViewDescriptor::default())?;
+/// let resolved_view = device.create_texture_view(resolved, &TextureViewDescriptor::default())?;
+/// let mut encoder = CommandEncoder::new(None);
+/// encoder.begin_render_pass(&RenderPassDescriptor {
+///     color_attachments: &[Some(RenderPassColorAttachment {
+///         resolve_target: Some(resolved_view),
+///         ..RenderPassColorAttachment::clear(msaa_view, Color::WHITE)
+///     })],
+///     ..RenderPassDescriptor::default()
+/// });
+/// device.submit([encoder.finish()])?;
+/// let one = Extent3d { width: 1, height: 1, depth_or_array_layers: 1 };
+/// assert_eq!(device.read_texture(TexelCopyTextureInfo::new(resolved), one)?, [255; 4]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RenderPassColorAttachment {
     /// A view of one mip level and one layer of a 2D texture with
@@ -120,6 +203,31 @@ impl RenderPassColorAttachment {
 }
 
 /// The depth/stencil attachment of a render pass.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let depth = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+///     format: TextureFormat::Depth32Float,
+///     usage: TextureUsages::RENDER_ATTACHMENT,
+///     ..TextureDescriptor::default()
+/// })?;
+/// let depth_view = device.create_texture_view(depth, &TextureViewDescriptor::default())?;
+/// let mut encoder = CommandEncoder::new(Some("depth prepass"));
+/// encoder.begin_render_pass(&RenderPassDescriptor {
+///     label: Some("depth prepass"),
+///     color_attachments: &[],
+///     depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+///         view: depth_view,
+///         depth_ops: Some(Operations::clear(1.0)),
+///         stencil_ops: None,
+///     }),
+/// });
+/// device.submit([encoder.finish()])?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RenderPassDepthStencilAttachment {
     /// A view of one mip level and one layer of a texture with a depth format.
@@ -132,6 +240,17 @@ pub struct RenderPassDepthStencilAttachment {
 }
 
 /// Describes a render pass.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// // A pass needs at least one attachment; an empty one is rejected at submission.
+/// let mut encoder = CommandEncoder::new(Some("empty"));
+/// encoder.begin_render_pass(&RenderPassDescriptor::default());
+/// assert!(matches!(device.submit([encoder.finish()]), Err(RhiError::InvalidCommand { .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct RenderPassDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -144,6 +263,17 @@ pub struct RenderPassDescriptor<'a> {
 }
 
 /// Describes a compute pass.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let mut encoder = CommandEncoder::new(Some("simulation"));
+/// let pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: Some("integrate") });
+/// pass.end();
+/// device.submit([encoder.finish()])?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ComputePassDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -155,6 +285,24 @@ pub struct ComputePassDescriptor<'a> {
 
 /// A texel position in a mip level: `z` is the array layer of a 1D or 2D texture and the depth
 /// slice of a 3D one.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let atlas = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+///     format: TextureFormat::Rgba8Unorm,
+///     usage: TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
+///     ..TextureDescriptor::default()
+/// })?;
+/// // Write one 2 x 1 tile at (10, 20).
+/// let tile = TexelCopyTextureInfo { origin: Origin3d { x: 10, y: 20, z: 0 }, ..TexelCopyTextureInfo::new(atlas) };
+/// let size = Extent3d { width: 2, height: 1, depth_or_array_layers: 1 };
+/// device.upload_texture(tile, &[9; 8], TexelCopyBufferLayout::default(), size)?;
+/// assert_eq!(device.read_texture(tile, size)?, [9; 8]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Origin3d {
     /// The column.
@@ -166,6 +314,16 @@ pub struct Origin3d {
 }
 
 /// How texels are laid out in a buffer for a copy to or from a texture.
+///
+/// ```
+/// use pragma_rhi::{COPY_BYTES_PER_ROW_ALIGNMENT, TexelCopyBufferLayout};
+///
+/// // Rows of a 100-texel RGBA8 image padded to the copy alignment, for `copy_buffer_to_texture`.
+/// let row: u32 = 100 * 4;
+/// let padded = row.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT;
+/// let layout = TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: None };
+/// assert_eq!(layout.bytes_per_row, Some(512));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct TexelCopyBufferLayout {
     /// The first byte of the first texel; a multiple of the format's texel size.
@@ -180,6 +338,35 @@ pub struct TexelCopyBufferLayout {
 }
 
 /// A buffer side of a copy to or from a texture.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let size = Extent3d { width: 4, height: 4, depth_or_array_layers: 1 };
+/// let texture = device.create_texture(&TextureDescriptor {
+///     size,
+///     format: TextureFormat::Rgba8Unorm,
+///     usage: TextureUsages::COPY_SRC | TextureUsages::COPY_DST,
+///     ..TextureDescriptor::default()
+/// })?;
+/// let readback = device.create_buffer(&BufferDescriptor {
+///     label: Some("readback"),
+///     size: 4 * 256,
+///     usage: BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+/// })?;
+/// let mut encoder = CommandEncoder::new(None);
+/// encoder.copy_texture_to_buffer(
+///     TexelCopyTextureInfo::new(texture),
+///     TexelCopyBufferInfo {
+///         buffer: readback,
+///         layout: TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: None },
+///     },
+///     size,
+/// );
+/// device.submit([encoder.finish()])?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TexelCopyBufferInfo {
     /// The buffer.
@@ -189,6 +376,24 @@ pub struct TexelCopyBufferInfo {
 }
 
 /// A texture side of a copy: a region of one mip level, starting at `origin`.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let texture = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
+///     mip_level_count: 4,
+///     usage: TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
+///     ..TextureDescriptor::default()
+/// })?;
+/// // The 1 x 1 mip level 3.
+/// let last_mip = TexelCopyTextureInfo { mip_level: 3, ..TexelCopyTextureInfo::new(texture) };
+/// let one = Extent3d { width: 1, height: 1, depth_or_array_layers: 1 };
+/// device.upload_texture(last_mip, &[1, 2, 3, 4], TexelCopyBufferLayout::default(), one)?;
+/// assert_eq!(device.read_texture(last_mip, one)?, [1, 2, 3, 4]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TexelCopyTextureInfo {
     /// The texture; single-sampled, with a color format.
@@ -212,9 +417,27 @@ impl TexelCopyTextureInfo {
 }
 
 /// The alignment of buffer offsets and sizes in buffer copies, clears, queue writes and reads.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 16, usage: BufferUsages::COPY_DST })?;
+/// assert_eq!(COPY_BUFFER_ALIGNMENT, 4);
+/// // Three bytes are not a multiple of the alignment.
+/// assert!(device.write_buffer(buffer, 0, &[1, 2, 3]).is_err());
+/// # Ok::<(), RhiError>(())
+/// ```
 pub const COPY_BUFFER_ALIGNMENT: u64 = 4;
 
 /// The alignment of [`TexelCopyBufferLayout::bytes_per_row`].
+///
+/// ```
+/// use pragma_rhi::{COPY_BYTES_PER_ROW_ALIGNMENT, TexelCopyBufferLayout};
+///
+/// let layout = TexelCopyBufferLayout { bytes_per_row: Some(COPY_BYTES_PER_ROW_ALIGNMENT), ..Default::default() };
+/// assert_eq!(layout.bytes_per_row, Some(256));
+/// ```
 pub const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
 
 // ---------------------------------------------------------------------------------------------
@@ -467,6 +690,20 @@ impl CommandEncoder {
     /// Fills a range of a buffer with zeros (`size: None` clears to the end). The buffer needs
     /// [`BufferUsages::COPY_DST`](crate::BufferUsages::COPY_DST); offset and size are multiples
     /// of [`COPY_BUFFER_ALIGNMENT`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let usage = BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
+    /// let counters = device.create_buffer(&BufferDescriptor { label: Some("counters"), size: 16, usage })?;
+    /// device.write_buffer(counters, 0, &[9; 16])?;
+    /// let mut encoder = CommandEncoder::new(Some("reset"));
+    /// encoder.clear_buffer(counters, 8, None);
+    /// device.submit([encoder.finish()])?;
+    /// assert_eq!(device.read_buffer(counters, 0, 16)?, [9, 9, 9, 9, 9, 9, 9, 9, 0, 0, 0, 0, 0, 0, 0, 0]);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn clear_buffer(&mut self, buffer: Buffer, offset: u64, size: Option<u64>) {
         self.push(Command::ClearBuffer {
             buffer,
@@ -478,6 +715,37 @@ impl CommandEncoder {
     /// Copies texels from a buffer with
     /// [`BufferUsages::COPY_SRC`](crate::BufferUsages::COPY_SRC) into a region of a texture with
     /// [`TextureUsages::COPY_DST`](crate::TextureUsages::COPY_DST).
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let size = Extent3d { width: 2, height: 2, depth_or_array_layers: 1 };
+    /// let texture = device.create_texture(&TextureDescriptor {
+    ///     size,
+    ///     format: TextureFormat::R8Unorm,
+    ///     usage: TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
+    ///     ..TextureDescriptor::default()
+    /// })?;
+    /// // Two rows of one byte each, at the 256-byte row pitch a buffer copy needs.
+    /// let staging = device.create_buffer(&BufferDescriptor { label: None, size: 512, usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST })?;
+    /// let mut rows = vec![0u8; 512];
+    /// rows[..2].copy_from_slice(&[1, 2]);
+    /// rows[256..258].copy_from_slice(&[3, 4]);
+    /// device.write_buffer(staging, 0, &rows)?;
+    /// let mut encoder = CommandEncoder::new(None);
+    /// encoder.copy_buffer_to_texture(
+    ///     TexelCopyBufferInfo {
+    ///         buffer: staging,
+    ///         layout: TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: None },
+    ///     },
+    ///     TexelCopyTextureInfo::new(texture),
+    ///     size,
+    /// );
+    /// device.submit([encoder.finish()])?;
+    /// assert_eq!(device.read_texture(TexelCopyTextureInfo::new(texture), size)?, [1, 2, 3, 4]);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn copy_buffer_to_texture(
         &mut self,
         src: TexelCopyBufferInfo,
@@ -536,6 +804,14 @@ impl CommandEncoder {
     }
 
     /// Finishes recording.
+    ///
+    /// ```
+    /// use pragma_rhi::CommandEncoder;
+    ///
+    /// let encoder = CommandEncoder::new(Some("shadows"));
+    /// let buffer = encoder.finish();
+    /// assert_eq!((buffer.label(), buffer.len()), (Some("shadows"), 0));
+    /// ```
     #[must_use]
     pub fn finish(self) -> CommandBuffer {
         CommandBuffer {
@@ -558,6 +834,21 @@ impl CommandEncoder {
 
 /// Recorded commands, ready for [`Device::submit`](crate::Device::submit). `Send` and `Sync`;
 /// it holds handles, not resources, so it keeps nothing alive.
+///
+/// ```
+/// use pragma_rhi::{Buffer, CommandEncoder};
+///
+/// // Recording needs no device: an encoder is plain data and `Send`.
+/// fn record(buffer: Buffer) -> pragma_rhi::CommandBuffer {
+///     let mut encoder = CommandEncoder::new(Some("zero"));
+///     encoder.clear_buffer(buffer, 0, None);
+///     encoder.finish()
+/// }
+/// let worker = std::thread::spawn(|| CommandEncoder::new(Some("from a thread")).finish());
+/// let buffer = worker.join().unwrap();
+/// assert_eq!((buffer.label(), buffer.is_empty()), (Some("from a thread"), true));
+/// # let _ = record;
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandBuffer {
     pub(crate) label: Option<String>,
@@ -589,6 +880,50 @@ impl CommandBuffer {
 // Passes
 
 /// A render pass being recorded; dropping it (or calling [`Self::end`]) ends the pass.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let target = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+///     usage: TextureUsages::RENDER_ATTACHMENT,
+///     ..TextureDescriptor::default()
+/// })?;
+/// let view = device.create_texture_view(target, &TextureViewDescriptor::default())?;
+/// let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+///     label: None,
+///     layout,
+///     vertex: VertexState { module, entry_point: Some("vs"), buffers: &[] },
+///     primitive: PrimitiveState::default(),
+///     depth_stencil: None,
+///     multisample: MultisampleState::default(),
+///     fragment: Some(FragmentState { module, entry_point: Some("fs"), targets: &[Some(TextureFormat::Rgba8Unorm.into())] }),
+/// })?;
+/// let mut encoder = CommandEncoder::new(Some("frame"));
+/// {
+///     let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+///         color_attachments: &[Some(RenderPassColorAttachment::clear(view, Color::BLACK))],
+///         ..RenderPassDescriptor::default()
+///     });
+///     pass.set_pipeline(pipeline);
+///     pass.set_viewport(0.0, 0.0, 32.0, 32.0, 0.0, 1.0);
+///     pass.set_scissor_rect(0, 0, 32, 32);
+///     pass.draw(0..3, 0..1);
+/// } // the pass ends here
+/// device.submit([encoder.finish()])?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug)]
 pub struct RenderPass<'e> {
     encoder: &'e mut CommandEncoder,
@@ -708,6 +1043,30 @@ impl Drop for RenderPass<'_> {
 }
 
 /// A compute pass being recorded; dropping it (or calling [`Self::end`]) ends the pass.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor { label: None, layout, module, entry_point: Some("cs") })?;
+/// let mut encoder = CommandEncoder::new(Some("compute"));
+/// let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+/// pass.set_pipeline(pipeline);
+/// pass.dispatch_workgroups(1024 / 64, 1, 1);
+/// pass.end();
+/// device.submit([encoder.finish()])?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug)]
 pub struct ComputePass<'e> {
     encoder: &'e mut CommandEncoder,

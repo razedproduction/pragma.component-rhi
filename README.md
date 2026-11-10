@@ -15,20 +15,22 @@ types; a null backend runs everything except pixels without a GPU.
 
 ## Status
 
-**M5 (0.5.0) — hardened.** Adapters of Vulkan, D3D12 and the null backend; devices; buffers,
-textures, views and samplers; shader modules validated by naga on every backend; bind groups,
-pipeline layouts, render and compute pipelines with a pipeline cache and compilation on
+**1.0.0 — stable** ([crates.io](https://crates.io/crates/pragma_rhi),
+[docs.rs](https://docs.rs/pragma_rhi)). Adapters of Vulkan, D3D12 and the null backend; devices;
+buffers, textures, views and samplers; shader modules validated by naga on every backend; bind
+groups, pipeline layouts, render and compute pipelines with a pipeline cache and compilation on
 pragma.core's async pool; command encoders with render and compute passes and copies, recorded in
 parallel as frame-graph tasks and validated as a whole at submission. Frames: surfaces from any
-`raw-window-handle` window (the crate opens none) with configure / acquire / present and
-resize handling; submission fences and a bounded number of frames in flight; deferred
-destruction; a bounded staging belt for uploads, uploads produced on pragma.core's blocking pool,
-and asynchronous readback. The null backend executes copies, clears and resolves byte for byte
-like a GPU and has a headless surface. `cargo run --example rhi_sim` runs the whole slice on every
+`raw-window-handle` window (the crate opens none) with configure / acquire / present and resize
+handling; submission fences and a bounded number of frames in flight; deferred destruction; a
+bounded staging belt for uploads, uploads produced on pragma.core's blocking pool, and
+asynchronous readback. The null backend executes copies, clears and resolves byte for byte like a
+GPU and has a headless surface. `cargo run --example rhi_sim` runs the whole slice on every
 adapter. Hardening (M5): a golden-image suite on WARP and lavapipe, fuzzing against oracles,
-device-loss recovery tests, benchmarks with a bench gate and semver checks. The API review and
-publication come next (M6). See the [roadmap](docs/roadmap.md) and the
-[architecture](docs/architecture.md).
+device-loss recovery tests, benchmarks with a bench gate and semver checks. M6: the API review
+(`#[non_exhaustive]` where the API will grow), rustdoc examples on every public type and an
+"Integrating into an engine" section in the crate docs. See the [roadmap](docs/roadmap.md) and
+the [architecture](docs/architecture.md).
 
 ## Building
 

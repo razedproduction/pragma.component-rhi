@@ -7,6 +7,18 @@ use crate::{Device, DeviceDescriptor, Limits, RhiError};
 
 bitflags! {
     /// The backends an [`Instance`] enumerates adapters of.
+    ///
+    /// ```
+    /// use pragma_rhi::{Backends, Instance, InstanceDescriptor};
+    ///
+    /// // The GPU backends only, without the null adapter.
+    /// let gpus = Instance::new(&InstanceDescriptor {
+    ///     backends: Backends::VULKAN | Backends::DX12,
+    ///     ..InstanceDescriptor::default()
+    /// });
+    /// # let _ = gpus;
+    /// assert!(Backends::all().contains(Backends::NULL));
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Backends: u8 {
         /// Vulkan (Windows, Linux).
@@ -25,6 +37,18 @@ impl Default for Backends {
 }
 
 /// The backend of an adapter or a device.
+///
+/// ```
+/// use pragma_rhi::{Backend, Instance, InstanceDescriptor};
+///
+/// let instance = Instance::new(&InstanceDescriptor::default());
+/// // Prefer a GPU and fall back to the null adapter, which always exists when enabled.
+/// let adapter = instance
+///     .adapters()
+///     .into_iter()
+///     .min_by_key(|adapter| adapter.info().backend == Backend::Null);
+/// assert!(adapter.is_some());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Backend {
@@ -37,6 +61,21 @@ pub enum Backend {
 }
 
 /// The kind of an adapter's device.
+///
+/// ```
+/// use pragma_rhi::{DeviceType, Instance, InstanceDescriptor};
+///
+/// // Rank discrete GPUs first, software adapters last.
+/// let rank = |ty: DeviceType| match ty {
+///     DeviceType::DiscreteGpu => 0,
+///     DeviceType::IntegratedGpu => 1,
+///     DeviceType::Cpu => 3,
+///     _ => 2,
+/// };
+/// let mut adapters = Instance::new(&InstanceDescriptor::default()).adapters();
+/// adapters.sort_by_key(|adapter| rank(adapter.info().device_type));
+/// # let _ = adapters;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DeviceType {
@@ -53,6 +92,15 @@ pub enum DeviceType {
 }
 
 /// What an adapter is.
+///
+/// ```
+/// use pragma_rhi::{Backend, DeviceType, Instance, InstanceDescriptor};
+///
+/// let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// let info = adapter.info();
+/// assert_eq!((info.backend, info.device_type), (Backend::Null, DeviceType::Cpu));
+/// println!("{} ({:04x}:{:04x})", info.name, info.vendor, info.device);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct AdapterInfo {
@@ -69,6 +117,20 @@ pub struct AdapterInfo {
 }
 
 /// The configuration of the null adapter.
+///
+/// ```
+/// use pragma_rhi::{BufferDescriptor, BufferUsages, DeviceDescriptor, Instance, InstanceDescriptor, NullConfig, RhiError};
+///
+/// // A null adapter with 1 KiB of device memory, to test out-of-memory handling.
+/// let instance = Instance::new(&InstanceDescriptor {
+///     null: NullConfig { memory_budget: 1024, ..NullConfig::default() },
+///     ..InstanceDescriptor::null()
+/// });
+/// let mut device = instance.adapters().remove(0).request_device(&DeviceDescriptor::default())?;
+/// let big = BufferDescriptor { label: None, size: 2048, usage: BufferUsages::STORAGE };
+/// assert!(matches!(device.create_buffer(&big), Err(RhiError::OutOfMemory { .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NullConfig {
     /// The limits the null adapter reports.
@@ -94,6 +156,13 @@ impl Default for NullConfig {
 }
 
 /// Describes an [`Instance`].
+///
+/// ```
+/// use pragma_rhi::{Backend, Instance, InstanceDescriptor};
+///
+/// let adapters = Instance::new(&InstanceDescriptor::null()).adapters();
+/// assert!(adapters.iter().all(|adapter| adapter.info().backend == Backend::Null));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct InstanceDescriptor {
     /// The backends to enumerate; all by default.
@@ -114,6 +183,16 @@ impl InstanceDescriptor {
 }
 
 /// The entry point: enumerates adapters.
+///
+/// ```
+/// use pragma_rhi::{Instance, InstanceDescriptor};
+///
+/// // Every backend: the GPU adapters found on this machine, then the null adapter.
+/// let instance = Instance::new(&InstanceDescriptor::default());
+/// for adapter in instance.adapters() {
+///     println!("{:?}: {}", adapter.info().backend, adapter.info().name);
+/// }
+/// ```
 pub struct Instance {
     pub(crate) wgpu: Option<wgpu::Instance>,
     pub(crate) null: Option<NullConfig>,
@@ -153,6 +232,14 @@ impl Instance {
 
     /// Every adapter of the enabled backends: GPU adapters in the driver's order, then the null
     /// adapter.
+    ///
+    /// ```
+    /// use pragma_rhi::{Backend, Instance, InstanceDescriptor};
+    ///
+    /// let adapters = Instance::new(&InstanceDescriptor::default()).adapters();
+    /// // The null adapter comes last, after every GPU adapter.
+    /// assert_eq!(adapters.last().map(|adapter| adapter.info().backend), Some(Backend::Null));
+    /// ```
     #[must_use]
     pub fn adapters(&self) -> Vec<Adapter> {
         let mut adapters: Vec<Adapter> = match &self.wgpu {
@@ -178,6 +265,18 @@ pub(crate) enum AdapterInner {
 }
 
 /// A physical (or software, or null) device that devices are created on.
+///
+/// ```
+/// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, RhiError};
+///
+/// let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// // Ask for what the adapter supports, never more.
+/// let mut limits = *adapter.limits();
+/// limits.max_buffer_size = limits.max_buffer_size.min(1 << 28);
+/// let device = adapter.request_device(&DeviceDescriptor { required_limits: limits, ..DeviceDescriptor::default() })?;
+/// assert_eq!(device.limits().max_buffer_size, limits.max_buffer_size);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct Adapter {
     info: AdapterInfo,
@@ -241,6 +340,18 @@ impl Adapter {
     ///
     /// [`RhiError::LimitExceeded`] when `desc.required_limits` exceed [`Self::limits`];
     /// [`RhiError::Backend`] when the driver refuses to create the device.
+    ///
+    /// ```
+    /// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, RhiError};
+    ///
+    /// let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// let mut one = adapter.request_device(&DeviceDescriptor { label: Some("one"), ..DeviceDescriptor::default() })?;
+    /// let two = adapter.request_device(&DeviceDescriptor { label: Some("two"), ..DeviceDescriptor::default() })?;
+    /// // Devices are independent: a lost one leaves the other working.
+    /// one.simulate_device_loss();
+    /// assert!(one.is_lost() && !two.is_lost());
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn request_device(&self, desc: &DeviceDescriptor<'_>) -> Result<Device, RhiError> {
         desc.required_limits.check_within(&self.limits)?;
         let backend = match &self.inner {

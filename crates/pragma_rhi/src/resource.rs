@@ -14,6 +14,14 @@ use crate::{Limits, ResourceKind, RhiError, Texture};
 
 bitflags! {
     /// How a [`Buffer`](crate::Buffer) may be used.
+    ///
+    /// ```
+    /// use pragma_rhi::BufferUsages;
+    ///
+    /// let usage = BufferUsages::VERTEX | BufferUsages::COPY_DST;
+    /// assert!(usage.contains(BufferUsages::COPY_DST));
+    /// assert!(!usage.contains(BufferUsages::MAP_READ));
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     pub struct BufferUsages: u16 {
         /// Mappable for reading; may be combined only with `COPY_DST`.
@@ -38,6 +46,22 @@ bitflags! {
 }
 
 /// Describes a [`Buffer`](crate::Buffer).
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let buffer = device.create_buffer(&BufferDescriptor {
+///     label: Some("indices"),
+///     size: 6 * 4,
+///     usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
+/// })?;
+/// device.write_buffer(buffer, 0, &[0u8; 24])?;
+/// // A size above the device's `max_buffer_size` is rejected.
+/// let huge = BufferDescriptor { label: None, size: u64::MAX, usage: BufferUsages::STORAGE };
+/// assert!(matches!(device.create_buffer(&huge), Err(RhiError::LimitExceeded { .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct BufferDescriptor<'a> {
     /// A debug label, passed to the backend (graphics debuggers show it).
@@ -49,6 +73,17 @@ pub struct BufferDescriptor<'a> {
 }
 
 /// A live buffer's properties.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let usage = BufferUsages::UNIFORM | BufferUsages::COPY_DST;
+/// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 256, usage })?;
+/// let info = device.buffer_info(buffer)?;
+/// assert_eq!((info.size, info.usage), (256, usage));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct BufferInfo {
@@ -102,6 +137,14 @@ pub(crate) fn validate_buffer(
 // Textures
 
 /// The size of a texture.
+///
+/// ```
+/// use pragma_rhi::Extent3d;
+///
+/// let cube_faces = Extent3d { width: 512, height: 512, depth_or_array_layers: 6 };
+/// assert_eq!(Extent3d::default().depth_or_array_layers, 1);
+/// # let _ = cube_faces;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Extent3d {
     /// Width in texels.
@@ -123,6 +166,22 @@ impl Default for Extent3d {
 }
 
 /// The dimensionality of a texture.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// // A 32³ volume, e.g. a color-grading lookup table.
+/// let lut = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 32, height: 32, depth_or_array_layers: 32 },
+///     dimension: TextureDimension::D3,
+///     format: TextureFormat::Rgba8Unorm,
+///     usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+///     ..TextureDescriptor::default()
+/// })?;
+/// assert_eq!(device.texture_info(lut)?.dimension, TextureDimension::D3);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TextureDimension {
     /// One-dimensional.
@@ -135,6 +194,15 @@ pub enum TextureDimension {
 }
 
 /// A texel format. Compressed formats come later.
+///
+/// ```
+/// use pragma_rhi::TextureFormat;
+///
+/// assert_eq!(TextureFormat::Rgba8UnormSrgb.block_size(), 4);
+/// assert!(TextureFormat::Rgba8UnormSrgb.is_srgb());
+/// assert!(TextureFormat::Depth24PlusStencil8.has_stencil());
+/// assert!(TextureFormat::R32Float.supports_storage());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum TextureFormat {
@@ -238,6 +306,14 @@ impl TextureFormat {
 
 bitflags! {
     /// How a [`Texture`] may be used.
+    ///
+    /// ```
+    /// use pragma_rhi::TextureUsages;
+    ///
+    /// // A render target that is later sampled and read back.
+    /// let usage = TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC;
+    /// assert!(usage.contains(TextureUsages::COPY_SRC));
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     pub struct TextureUsages: u8 {
         /// The source of a copy.
@@ -254,6 +330,31 @@ bitflags! {
 }
 
 /// Describes a [`Texture`].
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let target = device.create_texture(&TextureDescriptor {
+///     label: Some("msaa color"),
+///     size: Extent3d { width: 1280, height: 720, depth_or_array_layers: 1 },
+///     sample_count: 4,
+///     format: TextureFormat::Rgba8Unorm,
+///     usage: TextureUsages::RENDER_ATTACHMENT,
+///     ..TextureDescriptor::default()
+/// })?;
+/// assert_eq!(device.texture_info(target)?.sample_count, 4);
+/// // Multisampled textures have one mip level only.
+/// let result = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+///     mip_level_count: 2,
+///     sample_count: 4,
+///     usage: TextureUsages::RENDER_ATTACHMENT,
+///     ..TextureDescriptor::default()
+/// });
+/// assert!(matches!(result, Err(RhiError::InvalidDescriptor { .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TextureDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -287,6 +388,20 @@ impl Default for TextureDescriptor<'_> {
 }
 
 /// A live texture's properties.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let texture = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 64, height: 32, depth_or_array_layers: 1 },
+///     usage: TextureUsages::TEXTURE_BINDING,
+///     ..TextureDescriptor::default()
+/// })?;
+/// let info = device.texture_info(texture)?;
+/// assert_eq!((info.size.width, info.size.height, info.mip_level_count), (64, 32, 1));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct TextureInfo {
@@ -509,7 +624,25 @@ fn texture_bytes(info: &TextureInfo) -> Option<u64> {
 // Texture views
 
 /// How a [`TextureView`](crate::TextureView) interprets its texture.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let faces = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 128, height: 128, depth_or_array_layers: 6 },
+///     usage: TextureUsages::TEXTURE_BINDING,
+///     ..TextureDescriptor::default()
+/// })?;
+/// let cube = device.create_texture_view(faces, &TextureViewDescriptor {
+///     dimension: Some(TextureViewDimension::Cube),
+///     ..TextureViewDescriptor::default()
+/// })?;
+/// assert_eq!(device.texture_view_info(cube)?.array_layer_count, 6);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TextureViewDimension {
     /// A 1D texture.
     D1,
@@ -526,7 +659,26 @@ pub enum TextureViewDimension {
 }
 
 /// Which aspect of a texture a view covers.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let depth = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+///     format: TextureFormat::Depth24PlusStencil8,
+///     usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+///     ..TextureDescriptor::default()
+/// })?;
+/// let depth_only = device.create_texture_view(depth, &TextureViewDescriptor {
+///     aspect: TextureAspect::DepthOnly,
+///     ..TextureViewDescriptor::default()
+/// })?;
+/// assert_eq!(device.texture_view_info(depth_only)?.aspect, TextureAspect::DepthOnly);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum TextureAspect {
     /// Every aspect of the format.
     #[default]
@@ -538,6 +690,33 @@ pub enum TextureAspect {
 }
 
 /// Describes a [`TextureView`](crate::TextureView). The view has the texture's format.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let texture = device.create_texture(&TextureDescriptor {
+///     size: Extent3d { width: 256, height: 256, depth_or_array_layers: 1 },
+///     mip_level_count: 9,
+///     usage: TextureUsages::TEXTURE_BINDING,
+///     ..TextureDescriptor::default()
+/// })?;
+/// // Mip levels 2 and 3 only.
+/// let view = device.create_texture_view(texture, &TextureViewDescriptor {
+///     base_mip_level: 2,
+///     mip_level_count: Some(2),
+///     ..TextureViewDescriptor::default()
+/// })?;
+/// let info = device.texture_view_info(view)?;
+/// assert_eq!((info.base_mip_level, info.mip_level_count), (2, 2));
+/// // Levels past the texture's are rejected.
+/// let result = device.create_texture_view(texture, &TextureViewDescriptor {
+///     base_mip_level: 9,
+///     ..TextureViewDescriptor::default()
+/// });
+/// assert!(result.is_err());
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct TextureViewDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -558,6 +737,22 @@ pub struct TextureViewDescriptor<'a> {
 }
 
 /// A live texture view's properties, with every default resolved.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let texture = device.create_texture(&TextureDescriptor {
+///     format: TextureFormat::Rgba8UnormSrgb,
+///     usage: TextureUsages::TEXTURE_BINDING,
+///     ..TextureDescriptor::default()
+/// })?;
+/// let view = device.create_texture_view(texture, &TextureViewDescriptor::default())?;
+/// let info = device.texture_view_info(view)?;
+/// assert_eq!((info.texture, info.format), (texture, TextureFormat::Rgba8UnormSrgb));
+/// assert_eq!(info.dimension, TextureViewDimension::D2);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct TextureViewInfo {
@@ -667,7 +862,22 @@ pub(crate) fn validate_texture_view(
 // Samplers
 
 /// What a sampler returns outside `[0, 1]` texture coordinates.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let tiling = device.create_sampler(&SamplerDescriptor {
+///     address_mode_u: AddressMode::Repeat,
+///     address_mode_v: AddressMode::Repeat,
+///     ..SamplerDescriptor::default()
+/// })?;
+/// let info = device.sampler_info(tiling)?;
+/// assert_eq!(info.address_modes, [AddressMode::Repeat, AddressMode::Repeat, AddressMode::ClampToEdge]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum AddressMode {
     /// The edge texel.
     #[default]
@@ -679,6 +889,20 @@ pub enum AddressMode {
 }
 
 /// Texel filtering.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let trilinear = device.create_sampler(&SamplerDescriptor {
+///     mag_filter: FilterMode::Linear,
+///     min_filter: FilterMode::Linear,
+///     mipmap_filter: FilterMode::Linear,
+///     ..SamplerDescriptor::default()
+/// })?;
+/// assert_eq!(device.sampler_info(trilinear)?.mipmap_filter, FilterMode::Linear);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FilterMode {
     /// The nearest texel.
@@ -689,6 +913,21 @@ pub enum FilterMode {
 }
 
 /// A comparison for comparison samplers.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// // A shadow-map sampler: `textureSampleCompare` returns 1.0 where the reference is less or equal.
+/// let shadow = device.create_sampler(&SamplerDescriptor {
+///     compare: Some(CompareFunction::LessEqual),
+///     mag_filter: FilterMode::Linear,
+///     min_filter: FilterMode::Linear,
+///     ..SamplerDescriptor::default()
+/// })?;
+/// assert_eq!(device.sampler_info(shadow)?.compare, Some(CompareFunction::LessEqual));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompareFunction {
     /// Never passes.
@@ -710,6 +949,25 @@ pub enum CompareFunction {
 }
 
 /// Describes a [`Sampler`](crate::Sampler).
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let anisotropic = device.create_sampler(&SamplerDescriptor {
+///     label: Some("terrain"),
+///     mag_filter: FilterMode::Linear,
+///     min_filter: FilterMode::Linear,
+///     mipmap_filter: FilterMode::Linear,
+///     anisotropy_clamp: 16,
+///     ..SamplerDescriptor::default()
+/// })?;
+/// assert_eq!(device.sampler_info(anisotropic)?.anisotropy_clamp, 16);
+/// // Anisotropy needs every filter to be linear.
+/// let result = device.create_sampler(&SamplerDescriptor { anisotropy_clamp: 16, ..SamplerDescriptor::default() });
+/// assert!(matches!(result, Err(RhiError::InvalidDescriptor { .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct SamplerDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -755,6 +1013,15 @@ impl Default for SamplerDescriptor<'_> {
 }
 
 /// A live sampler's properties.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let sampler = device.create_sampler(&SamplerDescriptor { lod_max_clamp: 4.0, ..SamplerDescriptor::default() })?;
+/// assert_eq!(device.sampler_info(sampler)?.lod_clamp, [0.0, 4.0]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct SamplerInfo {

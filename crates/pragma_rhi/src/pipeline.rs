@@ -20,6 +20,14 @@ use crate::{
 // Vertex input
 
 /// The format of one vertex attribute.
+///
+/// ```
+/// use pragma_rhi::VertexFormat;
+///
+/// // `vec2<f32>` positions and `vec4<f32>` colors packed as four normalized bytes.
+/// let formats = [VertexFormat::Float32x2, VertexFormat::Unorm8x4];
+/// # let _ = formats;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 #[allow(missing_docs, reason = "the names say it: components x count")]
@@ -112,6 +120,18 @@ impl VertexFormat {
 }
 
 /// Whether a vertex buffer advances per vertex or per instance.
+///
+/// ```
+/// use pragma_rhi::{VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode};
+///
+/// // One `vec4<f32>` offset per instance, at `@location(1)`.
+/// let per_instance = VertexBufferLayout {
+///     array_stride: 16,
+///     step_mode: VertexStepMode::Instance,
+///     attributes: &[VertexAttribute { format: VertexFormat::Float32x4, offset: 0, shader_location: 1 }],
+/// };
+/// # let _ = per_instance;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum VertexStepMode {
     /// Per vertex.
@@ -122,6 +142,17 @@ pub enum VertexStepMode {
 }
 
 /// One attribute of a vertex buffer.
+///
+/// ```
+/// use pragma_rhi::{VertexAttribute, VertexFormat};
+///
+/// // An interleaved vertex: position (8 bytes), then UV (8 bytes).
+/// let attributes = [
+///     VertexAttribute { format: VertexFormat::Float32x2, offset: 0, shader_location: 0 },
+///     VertexAttribute { format: VertexFormat::Float32x2, offset: 8, shader_location: 1 },
+/// ];
+/// # let _ = attributes;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VertexAttribute {
     /// The format.
@@ -133,6 +164,42 @@ pub struct VertexAttribute {
 }
 
 /// The layout of one vertex buffer.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let attributes = [VertexAttribute { format: VertexFormat::Float32x2, offset: 0, shader_location: 0 }];
+/// let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+///     label: Some("mesh"),
+///     layout,
+///     vertex: VertexState {
+///         module,
+///         entry_point: Some("vs_mesh"),
+///         buffers: &[VertexBufferLayout { array_stride: 8, step_mode: VertexStepMode::Vertex, attributes: &attributes }],
+///     },
+///     primitive: PrimitiveState::default(),
+///     depth_stencil: None,
+///     multisample: MultisampleState::default(),
+///     fragment: Some(FragmentState {
+///         module,
+///         entry_point: Some("fs"),
+///         targets: &[Some(TextureFormat::Rgba8Unorm.into())],
+///     }),
+/// })?;
+/// assert_eq!(device.render_pipeline_info(pipeline)?.vertex_strides, [8]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct VertexBufferLayout<'a> {
     /// The bytes between consecutive elements; a multiple of 4, at most
@@ -145,6 +212,34 @@ pub struct VertexBufferLayout<'a> {
 }
 
 /// The vertex stage of a render pipeline.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// // `vs_mesh` reads `@location(0)`: a pipeline without a vertex buffer for it is rejected.
+/// let result = device.create_render_pipeline(&RenderPipelineDescriptor {
+///     label: None,
+///     layout,
+///     vertex: VertexState { module, entry_point: Some("vs_mesh"), buffers: &[] },
+///     primitive: PrimitiveState::default(),
+///     depth_stencil: None,
+///     multisample: MultisampleState::default(),
+///     fragment: None,
+/// });
+/// assert!(matches!(result, Err(RhiError::ShaderInterface { stage: ShaderStage::Vertex, .. })));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VertexState<'a> {
     /// The module.
@@ -159,7 +254,21 @@ pub struct VertexState<'a> {
 // Primitive, depth/stencil, multisample
 
 /// How vertices form primitives.
+///
+/// ```
+/// use pragma_rhi::{IndexFormat, PrimitiveState, PrimitiveTopology};
+///
+/// // A strip with primitive restart at 0xFFFF.
+/// let strip = PrimitiveState {
+///     topology: PrimitiveTopology::TriangleStrip,
+///     strip_index_format: Some(IndexFormat::Uint16),
+///     ..PrimitiveState::default()
+/// };
+/// assert_eq!(PrimitiveState::default().topology, PrimitiveTopology::TriangleList);
+/// # let _ = strip;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum PrimitiveTopology {
     /// Points.
     PointList,
@@ -181,6 +290,28 @@ impl PrimitiveTopology {
 }
 
 /// The type of indices.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let indices = device.create_buffer(&BufferDescriptor {
+///     label: Some("indices"),
+///     size: 6 * 2,
+///     usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
+/// })?;
+/// # let target = device.create_texture(&TextureDescriptor { usage: TextureUsages::RENDER_ATTACHMENT, ..Default::default() })?;
+/// # let view = device.create_texture_view(target, &TextureViewDescriptor::default())?;
+/// let mut encoder = CommandEncoder::new(None);
+/// let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+///     color_attachments: &[Some(RenderPassColorAttachment::clear(view, Color::BLACK))],
+///     ..RenderPassDescriptor::default()
+/// });
+/// pass.set_index_buffer(indices, IndexFormat::Uint16, 0, None);
+/// pass.end();
+/// device.submit([encoder.finish()])?;
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IndexFormat {
     /// 16-bit indices.
@@ -190,6 +321,14 @@ pub enum IndexFormat {
 }
 
 /// The winding of front-facing triangles.
+///
+/// ```
+/// use pragma_rhi::{Face, FrontFace, PrimitiveState};
+///
+/// // Clockwise front faces (a left-handed convention), back faces culled.
+/// let primitive = PrimitiveState { front_face: FrontFace::Cw, cull_mode: Some(Face::Back), ..PrimitiveState::default() };
+/// # let _ = primitive;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FrontFace {
     /// Counter-clockwise.
@@ -200,6 +339,15 @@ pub enum FrontFace {
 }
 
 /// A face of a triangle.
+///
+/// ```
+/// use pragma_rhi::{Face, PrimitiveState};
+///
+/// // Draw only back faces, e.g. for the inside of a skybox.
+/// let inside = PrimitiveState { cull_mode: Some(Face::Front), ..PrimitiveState::default() };
+/// assert_eq!(PrimitiveState::default().cull_mode, None);
+/// # let _ = inside;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Face {
     /// The front face.
@@ -209,6 +357,16 @@ pub enum Face {
 }
 
 /// Primitive assembly and rasterization.
+///
+/// ```
+/// use pragma_rhi::{Face, FrontFace, PrimitiveState, PrimitiveTopology};
+///
+/// let primitive = PrimitiveState::default();
+/// assert_eq!(primitive.topology, PrimitiveTopology::TriangleList);
+/// assert_eq!((primitive.front_face, primitive.cull_mode), (FrontFace::Ccw, None));
+/// let culled = PrimitiveState { cull_mode: Some(Face::Back), ..primitive };
+/// # let _ = culled;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct PrimitiveState {
     /// The topology.
@@ -222,6 +380,18 @@ pub struct PrimitiveState {
 }
 
 /// What a stencil test does to the stencil value.
+///
+/// ```
+/// use pragma_rhi::{CompareFunction, StencilFaceState, StencilOperation};
+///
+/// // Mark every pixel a mask covers: write the reference value where the test passes.
+/// let mark = StencilFaceState {
+///     compare: CompareFunction::Always,
+///     pass_op: StencilOperation::Replace,
+///     ..StencilFaceState::IGNORE
+/// };
+/// # let _ = mark;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[allow(missing_docs, reason = "WebGPU's stencil operations")]
 pub enum StencilOperation {
@@ -237,6 +407,15 @@ pub enum StencilOperation {
 }
 
 /// The stencil test of one face.
+///
+/// ```
+/// use pragma_rhi::{CompareFunction, StencilFaceState, StencilOperation};
+///
+/// // Draw only where the stencil equals the reference, keeping it unchanged.
+/// let inside_mask = StencilFaceState { compare: CompareFunction::Equal, ..StencilFaceState::IGNORE };
+/// assert_eq!(StencilFaceState::default(), StencilFaceState::IGNORE);
+/// assert_eq!(inside_mask.pass_op, StencilOperation::Keep);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StencilFaceState {
     /// The comparison.
@@ -266,6 +445,18 @@ impl Default for StencilFaceState {
 }
 
 /// The stencil test.
+///
+/// ```
+/// use pragma_rhi::{CompareFunction, DepthStencilState, StencilFaceState, StencilState, TextureFormat};
+///
+/// let face = StencilFaceState { compare: CompareFunction::Equal, ..StencilFaceState::IGNORE };
+/// let masked = DepthStencilState {
+///     format: TextureFormat::Depth24PlusStencil8,
+///     stencil: StencilState { front: face, back: face, ..StencilState::default() },
+///     ..DepthStencilState::default()
+/// };
+/// # let _ = masked;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StencilState {
     /// The front face.
@@ -299,6 +490,17 @@ impl StencilState {
 }
 
 /// The depth bias.
+///
+/// ```
+/// use pragma_rhi::{DepthBiasState, DepthStencilState};
+///
+/// // Push shadow casters away from the light to avoid shadow acne.
+/// let shadow_caster = DepthStencilState {
+///     bias: DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+///     ..DepthStencilState::default()
+/// };
+/// # let _ = shadow_caster;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DepthBiasState {
     /// The constant bias.
@@ -318,6 +520,34 @@ impl DepthBiasState {
 }
 
 /// The depth/stencil state of a render pipeline.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+///     label: Some("depth prepass"),
+///     layout,
+///     vertex: VertexState { module, entry_point: Some("vs"), buffers: &[] },
+///     primitive: PrimitiveState::default(),
+///     depth_stencil: Some(DepthStencilState::default()),
+///     multisample: MultisampleState::default(),
+///     fragment: None,
+/// })?;
+/// let info = device.render_pipeline_info(pipeline)?;
+/// assert_eq!(info.depth_stencil_format, Some(TextureFormat::Depth32Float));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DepthStencilState {
     /// The depth/stencil attachment's format; a depth format.
@@ -346,6 +576,33 @@ impl Default for DepthStencilState {
 }
 
 /// Multisampling.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+///     label: Some("msaa"),
+///     layout,
+///     vertex: VertexState { module, entry_point: Some("vs"), buffers: &[] },
+///     primitive: PrimitiveState::default(),
+///     depth_stencil: None,
+///     multisample: MultisampleState { count: 4, ..MultisampleState::default() },
+///     fragment: Some(FragmentState { module, entry_point: Some("fs"), targets: &[Some(TextureFormat::Rgba8Unorm.into())] }),
+/// })?;
+/// assert_eq!(device.render_pipeline_info(pipeline)?.sample_count, 4);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MultisampleState {
     /// 1 or 4; every attachment must have this sample count.
@@ -370,8 +627,21 @@ impl Default for MultisampleState {
 // Color targets
 
 /// A blend factor.
+///
+/// ```
+/// use pragma_rhi::{BlendComponent, BlendFactor, BlendOperation};
+///
+/// // Additive blending (particles, light accumulation): dst + src.
+/// let additive = BlendComponent {
+///     src_factor: BlendFactor::One,
+///     dst_factor: BlendFactor::One,
+///     operation: BlendOperation::Add,
+/// };
+/// # let _ = additive;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(missing_docs, reason = "WebGPU's blend factors")]
+#[non_exhaustive]
 pub enum BlendFactor {
     Zero,
     One,
@@ -389,6 +659,14 @@ pub enum BlendFactor {
 }
 
 /// A blend operation.
+///
+/// ```
+/// use pragma_rhi::{BlendComponent, BlendFactor, BlendOperation};
+///
+/// // Keep the larger value, e.g. for a max-intensity projection.
+/// let max = BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One, operation: BlendOperation::Max };
+/// # let _ = max;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[allow(missing_docs, reason = "WebGPU's blend operations")]
 pub enum BlendOperation {
@@ -403,6 +681,14 @@ pub enum BlendOperation {
 }
 
 /// The blending of the color or the alpha channel.
+///
+/// ```
+/// use pragma_rhi::{BlendComponent, BlendState};
+///
+/// assert_eq!(BlendComponent::default(), BlendComponent::REPLACE);
+/// // Straight alpha: color "over", alpha "over" too.
+/// assert_eq!(BlendState::ALPHA_BLENDING.alpha, BlendComponent::OVER);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlendComponent {
     /// The factor of the new value.
@@ -435,6 +721,17 @@ impl Default for BlendComponent {
 }
 
 /// The blending of a color target.
+///
+/// ```
+/// use pragma_rhi::{BlendState, ColorTargetState, ColorWrites, TextureFormat};
+///
+/// let transparent = ColorTargetState {
+///     format: TextureFormat::Bgra8UnormSrgb,
+///     blend: Some(BlendState::ALPHA_BLENDING),
+///     write_mask: ColorWrites::ALL,
+/// };
+/// # let _ = transparent;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BlendState {
     /// The color channels.
@@ -467,6 +764,15 @@ impl BlendState {
 
 bitflags! {
     /// The channels a color target writes.
+    ///
+    /// ```
+    /// use pragma_rhi::{ColorTargetState, ColorWrites, TextureFormat};
+    ///
+    /// // Write color but keep the alpha already in the target.
+    /// let target = ColorTargetState { write_mask: ColorWrites::COLOR, ..TextureFormat::Rgba8Unorm.into() };
+    /// assert_eq!(ColorWrites::default(), ColorWrites::ALL);
+    /// # let _ = target;
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ColorWrites: u8 {
         /// Red.
@@ -491,6 +797,14 @@ impl Default for ColorWrites {
 }
 
 /// One color target of a render pipeline.
+///
+/// ```
+/// use pragma_rhi::{ColorTargetState, ColorWrites, TextureFormat};
+///
+/// // From a format: no blending, every channel written.
+/// let target = ColorTargetState::from(TextureFormat::Rgba16Float);
+/// assert_eq!((target.blend, target.write_mask), (None, ColorWrites::ALL));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ColorTargetState {
     /// The attachment's format; a color format.
@@ -511,6 +825,35 @@ impl From<TextureFormat> for ColorTargetState {
 }
 
 /// The fragment stage of a render pipeline.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// // Two color targets; the second slot is unused (`None`) by this pipeline.
+/// let targets = [Some(TextureFormat::Rgba8Unorm.into()), None];
+/// let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+///     label: None,
+///     layout,
+///     vertex: VertexState { module, entry_point: Some("vs"), buffers: &[] },
+///     primitive: PrimitiveState::default(),
+///     depth_stencil: None,
+///     multisample: MultisampleState::default(),
+///     fragment: Some(FragmentState { module, entry_point: Some("fs"), targets: &targets }),
+/// })?;
+/// assert_eq!(device.render_pipeline_info(pipeline)?.color_formats, [Some(TextureFormat::Rgba8Unorm), None]);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FragmentState<'a> {
     /// The module.
@@ -526,6 +869,38 @@ pub struct FragmentState<'a> {
 // Pipelines
 
 /// Describes a [`RenderPipeline`](crate::RenderPipeline).
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let targets = [Some(TextureFormat::Rgba8Unorm.into())];
+/// let desc = RenderPipelineDescriptor {
+///     label: Some("opaque"),
+///     layout,
+///     vertex: VertexState { module, entry_point: Some("vs"), buffers: &[] },
+///     primitive: PrimitiveState::default(),
+///     depth_stencil: None,
+///     multisample: MultisampleState::default(),
+///     fragment: Some(FragmentState { module, entry_point: Some("fs"), targets: &targets }),
+/// };
+/// let pipeline = device.create_render_pipeline(&desc)?;
+/// // The same descriptor again is a cache hit: the backend compiles nothing.
+/// let again = device.create_render_pipeline(&desc)?;
+/// assert_ne!(pipeline, again);
+/// assert_eq!(device.pipeline_cache_stats().hits, 1);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RenderPipelineDescriptor<'a> {
     /// A debug label, passed to the backend (a pipeline taken from the cache keeps the label it
@@ -546,6 +921,30 @@ pub struct RenderPipelineDescriptor<'a> {
 }
 
 /// Describes a [`ComputePipeline`](crate::ComputePipeline).
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+///     label: Some("simulate"),
+///     layout,
+///     module,
+///     entry_point: Some("cs"),
+/// })?;
+/// assert_eq!(device.compute_pipeline_info(pipeline)?.workgroup_size, Some([64, 1, 1]));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ComputePipelineDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -559,6 +958,35 @@ pub struct ComputePipelineDescriptor<'a> {
 }
 
 /// A live render pipeline's properties.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+///     label: None,
+///     layout,
+///     vertex: VertexState { module, entry_point: Some("vs"), buffers: &[] },
+///     primitive: PrimitiveState::default(),
+///     depth_stencil: None,
+///     multisample: MultisampleState::default(),
+///     fragment: Some(FragmentState { module, entry_point: Some("fs"), targets: &[Some(TextureFormat::Rgba8Unorm.into())] }),
+/// })?;
+/// let info = device.render_pipeline_info(pipeline)?;
+/// assert_eq!(info.layout, layout);
+/// assert_eq!((info.color_formats.as_slice(), info.sample_count), (&[Some(TextureFormat::Rgba8Unorm)][..], 1));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct RenderPipelineInfo {
@@ -575,6 +1003,26 @@ pub struct RenderPipelineInfo {
 }
 
 /// A live compute pipeline's properties.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor { label: None, layout, module, entry_point: Some("cs") })?;
+/// let info = device.compute_pipeline_info(pipeline)?;
+/// assert_eq!((info.layout, info.workgroup_size), (layout, Some([64, 1, 1])));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct ComputePipelineInfo {
@@ -585,6 +1033,30 @@ pub struct ComputePipelineInfo {
 }
 
 /// Counters of a device's pipeline cache.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+/// #     label: None,
+/// #     source: ShaderSource::Wgsl(
+/// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+/// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+/// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+/// #          @compute @workgroup_size(64) fn cs() {}",
+/// #     ),
+/// # })?;
+/// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+/// let desc = ComputePipelineDescriptor { label: None, layout, module, entry_point: Some("cs") };
+/// device.create_compute_pipeline(&desc)?;
+/// device.create_compute_pipeline(&desc)?;
+/// let stats = device.pipeline_cache_stats();
+/// assert_eq!((stats.misses, stats.hits, stats.entries), (1, 1, 1));
+/// device.clear_pipeline_cache();
+/// assert_eq!(device.pipeline_cache_stats().entries, 0);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub struct PipelineCacheStats {

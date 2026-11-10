@@ -169,8 +169,8 @@ jobs:
         with:
           tool: cargo-semver-checks
       # The baseline is the PR base on main, not a tag (DECISIONS #25): a breaking public API
-      # change without a version bump fails the PR. The package is named: `--workspace` skips
-      # `publish = false` crates. A short target directory: semver-checks nests the baseline's
+      # change without a version bump fails the PR. The package is named, as before 1.0 when
+      # `--workspace` skipped it (`publish = false`). A short target directory: semver-checks nests the baseline's
       # build several levels deep, which exceeds MAX_PATH on Windows (LNK1104).
       - run: cargo semver-checks -p pragma_rhi --baseline-rev ${{ github.event.pull_request.base.sha }}
         env:

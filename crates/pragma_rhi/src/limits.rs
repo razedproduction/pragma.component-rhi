@@ -12,7 +12,22 @@ use crate::RhiError;
 /// Every `max_*` limit is an upper bound (a device may request at most the adapter's value);
 /// the two `min_*_offset_alignment` limits are lower bounds (a device may request at least the
 /// adapter's value, and only a power of two).
+///
+/// ```
+/// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, Limits, RhiError};
+///
+/// let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// // `Limits` is `#[non_exhaustive]`: start from the defaults (WebGPU's) and change fields.
+/// let mut limits = Limits::default();
+/// limits.max_bind_groups = 8;
+/// let result = adapter.request_device(&DeviceDescriptor { required_limits: limits, ..DeviceDescriptor::default() });
+/// // More than the adapter offers is an error naming the limit.
+/// if limits.max_bind_groups > adapter.limits().max_bind_groups {
+///     assert!(matches!(result, Err(RhiError::LimitExceeded { limit: "max_bind_groups", .. })));
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Limits {
     /// The largest `width` of a 1D texture.
     pub max_texture_dimension_1d: u32,

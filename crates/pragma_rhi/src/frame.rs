@@ -15,12 +15,39 @@ use crate::backend::{BufferObj, TextureObj};
 use crate::{BufferInfo, Device, RhiError};
 
 /// The largest number of frames a device may keep in flight.
+///
+/// ```
+/// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, MAX_FRAMES_IN_FLIGHT};
+///
+/// let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// let too_many = DeviceDescriptor { frames_in_flight: MAX_FRAMES_IN_FLIGHT + 1, ..DeviceDescriptor::default() };
+/// assert!(adapter.request_device(&too_many).is_err());
+/// ```
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 8;
 
 /// The fence of one submission: its position in the device's submission order, starting at 1.
 ///
 /// Returned by [`Device::submit`]; a submission is complete once [`Device::is_complete`] says
 /// so (after a poll), or after [`Device::wait`] returned for it or a later one.
+///
+/// ```
+/// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, NullConfig, RhiError};
+///
+/// // A null device that reports a submission complete only two submissions later.
+/// let instance = Instance::new(&InstanceDescriptor {
+///     null: NullConfig { latency: 2, ..NullConfig::default() },
+///     ..InstanceDescriptor::null()
+/// });
+/// let mut device = instance.adapters().remove(0).request_device(&DeviceDescriptor::default())?;
+/// let first = device.submit([])?;
+/// let second = device.submit([])?;
+/// assert!(first < second);
+/// device.poll()?;
+/// assert!(!device.is_complete(first));
+/// device.wait(first)?;
+/// assert!(device.is_complete(first));
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SubmissionIndex(pub(crate) u64);
 
@@ -33,6 +60,20 @@ impl SubmissionIndex {
 }
 
 /// The frame [`Device::begin_frame`] opened.
+///
+/// ```
+/// # use pragma_rhi::*;
+/// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+/// let first = device.begin_frame()?;
+/// device.end_frame()?;
+/// let second = device.begin_frame()?;
+/// device.end_frame()?;
+/// // Frames count up; slots cycle through `frames_in_flight` (2 by default).
+/// assert_eq!((first.index + 1, first.slot), (second.index, 0));
+/// assert_eq!(second.slot, 1);
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct FrameInfo {
@@ -256,6 +297,17 @@ impl Device {
     /// # Errors
     ///
     /// As [`Self::poll`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// device.submit([CommandEncoder::new(None).finish()])?;
+    /// // Before shutdown or a resize that recreates everything.
+    /// device.wait_idle()?;
+    /// assert!(device.is_complete(device.last_submission().ok_or(RhiError::DeviceLost)?));
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn wait_idle(&mut self) -> Result<(), RhiError> {
         self.wait(SubmissionIndex(self.timeline.submitted))
     }
@@ -267,6 +319,31 @@ impl Device {
     /// # Errors
     ///
     /// [`RhiError::Frame`] while a frame is open; otherwise as [`Self::poll`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let mut frame_buffers = PerFrame::new(&device, |_| None);
+    /// for _ in 0..3 {
+    ///     // Blocks while `frames_in_flight` frames are still on the GPU.
+    ///     let frame = device.begin_frame()?;
+    ///     // The previous frame of this slot has retired: its resources can be reused.
+    ///     let uniforms = match frame_buffers.get_mut(frame) {
+    ///         Some(buffer) => *buffer,
+    ///         slot => *slot.insert(device.create_buffer(&BufferDescriptor {
+    ///             label: Some("per-frame uniforms"),
+    ///             size: 256,
+    ///             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+    ///         })?),
+    ///     };
+    ///     device.write_buffer(uniforms, 0, &[frame.index as u8; 256])?;
+    ///     device.submit([CommandEncoder::new(Some("frame")).finish()])?;
+    ///     device.end_frame()?;
+    /// }
+    /// assert_eq!(device.live(ResourceKind::Buffer), 2);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn begin_frame(&mut self) -> Result<FrameInfo, RhiError> {
         self.alive()?;
         if self.timeline.open {

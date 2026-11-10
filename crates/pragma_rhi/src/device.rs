@@ -38,6 +38,23 @@ use crate::{
 };
 
 /// Describes a [`Device`].
+///
+/// ```
+/// use pragma_rhi::{DeviceDescriptor, Instance, InstanceDescriptor, RhiError, UploadConfig};
+///
+/// let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+/// let device = adapter.request_device(&DeviceDescriptor {
+///     label: Some("main"),
+///     frames_in_flight: 3,
+///     upload: UploadConfig { capacity: 16 << 20, ..UploadConfig::default() },
+///     ..DeviceDescriptor::default()
+/// })?;
+/// assert_eq!(device.frames_in_flight(), 3);
+/// // Zero frames in flight would never let a frame begin.
+/// let result = adapter.request_device(&DeviceDescriptor { frames_in_flight: 0, ..DeviceDescriptor::default() });
+/// assert!(result.is_err());
+/// # Ok::<(), RhiError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeviceDescriptor<'a> {
     /// A debug label, passed to the backend.
@@ -306,11 +323,37 @@ impl Device {
 
     /// Loses the device on purpose, as a driver reset would, to test recovery paths: every
     /// later call returns [`RhiError::DeviceLost`]. On a GPU backend this destroys the device.
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 16, usage: BufferUsages::COPY_DST })?;
+    /// device.simulate_device_loss();
+    /// assert!(matches!(device.write_buffer(buffer, 0, &[0; 16]), Err(RhiError::DeviceLost)));
+    /// // Recovery: a new device from the same adapter; resources are created again.
+    /// let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 16, usage: BufferUsages::COPY_DST })?;
+    /// device.write_buffer(buffer, 0, &[0; 16])?;
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn simulate_device_loss(&mut self) {
         self.backend.lose();
     }
 
     /// The number of live resources of a kind.
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let a = device.create_sampler(&SamplerDescriptor::default())?;
+    /// let _b = device.create_sampler(&SamplerDescriptor::default())?;
+    /// assert_eq!(device.live(ResourceKind::Sampler), 2);
+    /// device.destroy_sampler(a)?;
+    /// assert_eq!(device.live(ResourceKind::Sampler), 1);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     #[must_use]
     pub const fn live(&self, kind: ResourceKind) -> usize {
         match kind {
@@ -329,6 +372,19 @@ impl Device {
 
     /// Device memory in use by buffers and textures, if the backend accounts it (the null
     /// backend does; wgpu does not expose it).
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// assert_eq!(device.allocated_bytes(), Some(0));
+    /// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 4096, usage: BufferUsages::STORAGE })?;
+    /// assert_eq!(device.allocated_bytes(), Some(4096));
+    /// device.destroy_buffer(buffer)?;
+    /// device.wait_idle()?;
+    /// assert_eq!(device.allocated_bytes(), Some(0));
+    /// # Ok::<(), RhiError>(())
+    /// ```
     #[must_use]
     pub const fn allocated_bytes(&self) -> Option<u64> {
         self.backend.allocated()
@@ -394,6 +450,26 @@ impl Device {
     /// [`RhiError::ResourceInUse`] while a bind group uses it, [`RhiError::StaleHandle`] (also
     /// on a second destroy), [`RhiError::ForeignHandle`], [`RhiError::DeviceLost`]; the errors
     /// of [`Self::flush_uploads`].
+    ///
+    /// ```
+    /// use pragma_rhi::{BufferDescriptor, BufferUsages, DeviceDescriptor, Instance, InstanceDescriptor, NullConfig, RhiError};
+    ///
+    /// // A null device that keeps one submission in flight, like a GPU a frame behind.
+    /// let instance = Instance::new(&InstanceDescriptor {
+    ///     null: NullConfig { latency: 1, ..NullConfig::default() },
+    ///     ..InstanceDescriptor::null()
+    /// });
+    /// let mut device = instance.adapters().remove(0).request_device(&DeviceDescriptor::default())?;
+    /// let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 256, usage: BufferUsages::VERTEX })?;
+    /// device.submit([])?;
+    /// device.destroy_buffer(buffer)?;
+    /// // The handle is stale at once; the memory waits for the submission to retire.
+    /// assert!(device.buffer_info(buffer).is_err());
+    /// assert_eq!(device.deferred_destructions(), 1);
+    /// device.wait_idle()?;
+    /// assert_eq!(device.deferred_destructions(), 0);
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn destroy_buffer(&mut self, buffer: Buffer) -> Result<(), RhiError> {
         self.alive()?;
         in_use(ResourceKind::Buffer, self.buffers.get(buffer)?.users)?;
@@ -663,6 +739,35 @@ impl Device {
     /// The handles' errors; [`RhiError::InvalidDescriptor`] for a missing, extra or duplicate
     /// binding, a resource of the wrong kind, usage, range or format; otherwise as
     /// [`Self::create_buffer`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+    ///     label: None,
+    ///     entries: &[BindGroupLayoutEntry {
+    ///         binding: 0,
+    ///         visibility: ShaderStages::COMPUTE,
+    ///         ty: BindingType::Buffer {
+    ///             ty: BufferBindingType::Storage { read_only: true },
+    ///             has_dynamic_offset: false,
+    ///             min_binding_size: None,
+    ///         },
+    ///     }],
+    /// })?;
+    /// // A uniform buffer where the layout asks for a storage buffer: the usage is checked.
+    /// let uniform = device.create_buffer(&BufferDescriptor { label: None, size: 64, usage: BufferUsages::UNIFORM })?;
+    /// let result = device.create_bind_group(layout, &BindGroupDescriptor {
+    ///     label: None,
+    ///     entries: &[BindGroupEntry {
+    ///         binding: 0,
+    ///         resource: BindingResource::Buffer(BufferBinding { buffer: uniform, offset: 0, size: None }),
+    ///     }],
+    /// });
+    /// assert!(matches!(result, Err(RhiError::InvalidDescriptor { .. })));
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn create_bind_group(
         &mut self,
         layout: BindGroupLayout,
@@ -968,6 +1073,34 @@ impl Device {
     /// layout, the vertex buffers or the color targets; [`RhiError::InvalidDescriptor`] /
     /// [`RhiError::LimitExceeded`] for the descriptor's own rules; otherwise as
     /// [`Self::create_buffer`].
+    ///
+    /// ```
+    /// # use pragma_rhi::*;
+    /// # let adapter = Instance::new(&InstanceDescriptor::null()).adapters().remove(0);
+    /// # let mut device = adapter.request_device(&DeviceDescriptor::default())?;
+    /// # let module = device.create_shader_module(&ShaderModuleDescriptor {
+    /// #     label: None,
+    /// #     source: ShaderSource::Wgsl(
+    /// #         "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+    /// #          @vertex fn vs_mesh(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+    /// #          @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+    /// #          @compute @workgroup_size(64) fn cs() {}",
+    /// #     ),
+    /// # })?;
+    /// # let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default())?;
+    /// // The fragment shader writes floats to `@location(0)`, but the target holds integers.
+    /// let result = device.create_render_pipeline(&RenderPipelineDescriptor {
+    ///     label: Some("mismatch"),
+    ///     layout,
+    ///     vertex: VertexState { module, entry_point: Some("vs"), buffers: &[] },
+    ///     primitive: PrimitiveState::default(),
+    ///     depth_stencil: None,
+    ///     multisample: MultisampleState::default(),
+    ///     fragment: Some(FragmentState { module, entry_point: Some("fs"), targets: &[Some(TextureFormat::R32Uint.into())] }),
+    /// });
+    /// assert!(matches!(result, Err(RhiError::ShaderInterface { stage: ShaderStage::Fragment, .. })));
+    /// # Ok::<(), RhiError>(())
+    /// ```
     pub fn create_render_pipeline(
         &mut self,
         desc: &RenderPipelineDescriptor<'_>,
