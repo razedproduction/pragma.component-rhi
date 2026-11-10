@@ -15,7 +15,7 @@ types; a null backend runs everything except pixels without a GPU.
 
 ## Status
 
-**M4 (0.4.0) — frames.** Adapters of Vulkan, D3D12 and the null backend; devices; buffers,
+**M5 (0.5.0) — hardened.** Adapters of Vulkan, D3D12 and the null backend; devices; buffers,
 textures, views and samplers; shader modules validated by naga on every backend; bind groups,
 pipeline layouts, render and compute pipelines with a pipeline cache and compilation on
 pragma.core's async pool; command encoders with render and compute passes and copies, recorded in
@@ -25,7 +25,9 @@ resize handling; submission fences and a bounded number of frames in flight; def
 destruction; a bounded staging belt for uploads, uploads produced on pragma.core's blocking pool,
 and asynchronous readback. The null backend executes copies, clears and resolves byte for byte
 like a GPU and has a headless surface. `cargo run --example rhi_sim` runs the whole slice on every
-adapter. Hardening comes next (M5). See the [roadmap](docs/roadmap.md) and the
+adapter. Hardening (M5): a golden-image suite on WARP and lavapipe, fuzzing against oracles,
+device-loss recovery tests, benchmarks with a bench gate and semver checks. The API review and
+publication come next (M6). See the [roadmap](docs/roadmap.md) and the
 [architecture](docs/architecture.md).
 
 ## Building
@@ -46,6 +48,8 @@ The same rules as pragma.core, checked in CI on every PR:
   failures, device loss included, are typed `#[non_exhaustive]` errors.
 - **No `unsafe`.** The FFI of the GPU APIs stays inside wgpu ([DECISIONS #6, #8](DECISIONS.md)).
 - **Layered.** Crates depend only on lower layers (`layers.toml`).
+- **Verified.** Golden images on WARP and lavapipe, fuzzing and property tests against naive
+  oracles, device-loss recovery tests, a bench gate and `cargo semver-checks` on every PR.
 
 ## Platforms
 

@@ -13,7 +13,7 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
 | M2 | 0.2.0 | Shaders, bind groups, pipelines | ✅ |
 | M3 | 0.3.0 | Command recording on the pragma.core frame graph, vertical slice | ✅ |
 | M4 | 0.4.0 | Surfaces, frames in flight, uploads, deferred destruction | ✅ |
-| M5 | 0.5.0 | Hardening: golden images, fuzz, benches, semver | 📋 |
+| M5 | 0.5.0 | Hardening: golden images, fuzz, benches, semver | ✅ |
 | M6 | 1.0.0 | Stable API, publication | 📋 |
 
 ---
@@ -91,13 +91,18 @@ Legend: ✅ done · 🚧 in progress · 📋 planned
       them retired
 - [x] Example `rhi_sim` runs on frames, the belt and async readback with unchanged hashes
 
-## M5 — Hardening (0.5.0)
+## M5 — Hardening (0.5.0) ✅
 
-- [ ] Golden-image suite on software adapters (WARP, lavapipe) in CI
-- [ ] Fuzzing of descriptor validation and handle operations against the oracle
-- [ ] Benchmarks (`criterion`): resource churn, command recording, submission; bench gate
-- [ ] Device-loss recovery tests on the null backend
-- [ ] `cargo-semver-checks` in CI
+- [x] **Decision:** golden images as exact hashes per software adapter (DECISIONS #20)
+- [x] Golden-image suite on software adapters (WARP, lavapipe) in CI: example `rhi_golden`, seven
+      scenes (raster rules, blending, depth and culling, MSAA resolve, sampling with indexed and
+      instanced draws, viewport and scissor, sRGB, compute), `--bless`, `--dump`
+- [x] Fuzzing of descriptor validation, handle operations and transfers against oracles shared
+      with proptest (`fuzz/`, `tests/common`, DECISIONS #21)
+- [x] Benchmarks (`criterion`): resource churn, command recording, submission (DECISIONS #23);
+      bench gate in PRs (DECISIONS #24)
+- [x] Device-loss recovery tests on the null backend (DECISIONS #22)
+- [x] `cargo-semver-checks` in CI against the PR base; version 0.5.0 (DECISIONS #25)
 
 ## M6 — 1.0 (1.0.0)
 

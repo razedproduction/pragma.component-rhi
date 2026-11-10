@@ -1,6 +1,6 @@
 # Architecture
 
-Status: §2, §3, §3a, §4, §4a and §5 are implemented (M1–M4); the rest is the intended design. Sections marked
+Status: §2, §3, §3a, §4, §4a, §5 and §6 are implemented (M1–M5); the rest is the intended design. Sections marked
 *open* are decided in the milestone named there and recorded in `DECISIONS.md`.
 
 ## 1. Place in the stack
@@ -86,7 +86,7 @@ ranges, usage conflicts within a pass or dispatch — resolves handles to backen
 then hands the whole submission to the backend. A broken rule rejects all of it with
 `RhiError::InvalidCommand`, naming the command buffer's label (the task) and the command. wgpu
 encodes the validated commands on the frame thread; that translation is cheap next to recording
-and is what M5's benchmarks will measure.
+and is not part of the benchmarks, which run on the null backend (§6).
 
 The null backend keeps the bytes of buffers and textures (DECISIONS #16) and executes queue
 writes, copies, buffer clears, attachment clears, resolves and discards with the results a GPU
@@ -128,6 +128,40 @@ memory, an out-of-date surface. All of them are `RhiError` variants returned fro
 observed them (`RhiError::Surface(SurfaceError::Outdated)` for the surface); none is a panic or an
 abort. After device loss every handle of that device returns
 `RhiError::DeviceLost` until the engine creates a new device.
+
+Recovery is a new device from the same adapter: handles of the lost device are `ForeignHandle`
+there, resources are rebuilt from the engine's own descriptions, a surface is taken over by
+`configure_surface` on the new device, and work running on pragma.core's blocking pool for the
+lost device finishes with `DeviceLost` (DECISIONS #22, `tests/device_loss.rs`).
+
+## 6. Verification and performance
+
+- **Oracles** (`tests/common`, DECISIONS #21): handles with deferred destruction and fences,
+  descriptor validation, buffer transfers, each against a naive model; run by proptest
+  (`tests/oracle.rs`) and by cargo-fuzz (`fuzz/`) with the same byte decoders.
+- **Golden images** (DECISIONS #20): `rhi_golden` hashes seven scenes per software adapter
+  (WARP, lavapipe) against `examples/rhi_golden/golden.txt`.
+- **Benchmarks** (DECISIONS #23) on the null backend, 1000 operations each, medians on the
+  development machine (8 logical cores, Windows, release with thin LTO):
+
+| measurement | median | per operation |
+|---|---|---|
+| `resources/hashmap_churn` (reference) | 54.6 µs | 55 ns |
+| `resources/buffer_churn` (create + destroy) | 108 µs | 108 ns |
+| `resources/texture_view_churn` (texture + view, create + destroy) | 296 µs | 296 ns |
+| `resources/bind_group_churn` (create + destroy) | 388 µs | 388 ns |
+| `recording/encode_draws` | 7.6 µs | 8 ns |
+| `recording/encode_copies` | 23.3 µs | 23 ns |
+| `recording/graph_8_tasks` (8 tasks × 125 draws, 4 workers) | 24.8 µs | 25 ns |
+| `submission/submit_draws` (validate + null execution) | 59.8 µs | 60 ns |
+| `submission/submit_copies` | 276 µs | 276 ns |
+| `submission/frame_draws` (`begin_frame` … `end_frame`) | 52.2 µs | 52 ns |
+
+Recording is a push of plain data; most of a frame's CPU cost is submission-time validation,
+about 60 ns per draw. A copy costs more on the null backend because it really moves bytes
+(allocating a temporary for each copy); on wgpu that part is the driver's. The bench gate
+(DECISIONS #24) compares a PR with its base on the same runner against the `HashMap` reference
+of each bench target.
 
 ## 6. Reliability rules
 

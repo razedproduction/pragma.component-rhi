@@ -4,6 +4,34 @@ The format is [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioni
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-10
+
+### Added
+
+- Golden-image suite (M5, DECISIONS #20): example `rhi_golden` renders seven scenes on the
+  software adapters — WARP on Windows, lavapipe on Linux — and compares each readback's hash with
+  `examples/rhi_golden/golden.txt` (hashes per adapter); `--adapter`, `--bless`, `--dump DIR`
+  (PPM images and the blessed file). Run in CI on both platforms.
+- Fuzzing (DECISIONS #21): a `fuzz/` workspace (cargo-fuzz) with the targets `handles`,
+  `descriptors` and `transfers`; their oracles in `tests/common` also run as property tests
+  (`tests/oracle.rs`). 60 s per target in PRs, 10 min nightly.
+- Device-loss recovery tests (DECISIONS #22): every entry point after a loss with work in flight,
+  recovery on a new device with identical results, a surface moving to the new device, blocking
+  pool work across the loss.
+- Benchmarks (DECISIONS #23): `resources`, `recording` and `submission` on the null backend
+  (`cargo bench -p pragma_rhi`), a bench gate in PRs (`tools/bench_gate.py`, DECISIONS #24) and a
+  nightly benchmark run.
+- CI: `cargo semver-checks` against the PR base (DECISIONS #25); MSRV runs the tests, benches and
+  doctests on 1.88; a `changes` job skips the heavy jobs on docs-only PRs.
+
+### Changed
+
+- The version is 0.5.0.
+- `pragma_rhi` sets `#![recursion_limit = "256"]`: newer compilers warn (and will fail) proving
+  wgpu-core's pipeline types `Send` at the default depth.
+- The library target is no longer a bench target (`[lib] bench = false`), so
+  `cargo bench -p pragma_rhi -- <criterion flags>` works.
+
 ## [0.4.0] - 2026-11-10
 
 ### Added

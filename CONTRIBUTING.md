@@ -8,7 +8,14 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 python tools/audit_workspace.py .
 cargo deny check
+# On a machine with WARP (Windows) or lavapipe (Linux):
+cargo run -p pragma_rhi --example rhi_golden -- --adapter warp
 ```
+
+A change that moves rendered pixels on purpose updates the golden hashes with `--bless` (one
+adapter at a time); the lavapipe lines can be taken from the `golden-lavapipe` CI artifact.
+Fuzz targets (Linux, nightly): `cargo +nightly fuzz run handles` (also `descriptors`,
+`transfers`); a crash reproduces as a `tests/oracle.rs` input through the same decoder.
 
 ## Module contract
 

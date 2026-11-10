@@ -11,12 +11,44 @@ env:
   RUSTDOCFLAGS: -D warnings
 
 jobs:
+  # Does the PR touch anything besides Markdown and docs/? If not, the heavy jobs (fuzz,
+  # semver-checks, bench gate) are skipped (as pragma.component-ecs DECISIONS #32). A skipped job
+  # counts as passed for required checks, unlike a workflow-level `paths-ignore`, which never
+  # reports. Pushes to main always run everything.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
+          echo "$files"
+          if echo "$files" | grep -qvE '(\.md$|^docs/)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
     name: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            adapter: warp
+          - os: ubuntu-latest
+            adapter: lavapipe
     runs-on: ${{ matrix.os }}
     # A hung test must fail fast rather than hang for the default 6 h.
     timeout-minutes: 30
@@ -30,6 +62,51 @@ jobs:
       # The vertical slice (roadmap M3) on the null backend: identical hashes on 1 and N workers.
       - run: cargo run -p pragma_rhi --example rhi_sim -- --null
       - run: cargo doc --workspace --no-deps --all-features
+      # The golden-image suite (roadmap M5, DECISIONS #20) on the runner's software adapter:
+      # WARP (D3D12) on Windows, lavapipe (Mesa's Vulkan llvmpipe) on Linux. The adapter is
+      # required, so a runner without it fails instead of passing silently.
+      - name: lavapipe
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
+      - name: golden images (${{ matrix.adapter }})
+        run: cargo run -p pragma_rhi --example rhi_golden -- --adapter ${{ matrix.adapter }} --dump target/golden
+      # On a mismatch: every scene image (PPM) and the golden.txt the run would bless.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-${{ matrix.adapter }}
+          path: target/golden
+          if-no-files-found: ignore
+
+  fuzz:
+    name: fuzz (${{ matrix.target }}, 60 s)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [handles, descriptors, transfers]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # A separate `fuzz/` workspace (libFuzzer is C++, DECISIONS #21). The target is explicit: the
+      # prebuilt cargo-fuzz binary is built for musl and defaults to its own platform, while ASan
+      # is incompatible with musl's static libc.
+      - run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=60
+        env:
+          RUSTFLAGS: ""
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts
 
   msrv:
     name: MSRV (1.88)
@@ -38,7 +115,10 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install 1.88 --profile minimal
       - uses: Swatinem/rust-cache@v2
-      - run: cargo +1.88 check --workspace --all-features
+      # Tests, benches and doctests too, not only the library: they build the dev-dependencies
+      # and use more of the language (as pragma.component-ecs DECISIONS #40).
+      - run: cargo +1.88 test --workspace --all-features --all-targets
+      - run: cargo +1.88 test --workspace --all-features --doc
 
   deny:
     name: cargo-deny
@@ -69,3 +149,58 @@ jobs:
           else
             python tools/audit_workspace.py .
           fi
+
+  semver:
+    name: semver-checks (${{ matrix.os }})
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      # The baseline is the PR base on main, not a tag (DECISIONS #25): a breaking public API
+      # change without a version bump fails the PR. The package is named: `--workspace` skips
+      # `publish = false` crates. A short target directory: semver-checks nests the baseline's
+      # build several levels deep, which exceeds MAX_PATH on Windows (LNK1104).
+      - run: cargo semver-checks -p pragma_rhi --baseline-rev ${{ github.event.pull_request.base.sha }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/sc
+
+  bench:
+    name: bench gate (${{ matrix.os }})
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-gate
+      # Interleaved A/B of the PR base ↔ head on one runner (DECISIONS #24): a regression > 10%
+      # beyond the shift of the HashMap reference in the same bench fails the PR.
+      - name: bench gate
+        shell: bash
+        run: |
+          git worktree add --detach ../bench-base "${{ github.event.pull_request.base.sha }}"
+          python tools/bench_gate.py --base ../bench-base --head . --rounds 3 --summary "$GITHUB_STEP_SUMMARY"

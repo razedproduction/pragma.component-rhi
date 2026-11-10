@@ -1,0 +1,10 @@
+# Golden image hashes of rhi_golden (DECISIONS #20): <adapter> <scene> <FNV-1a 64>.
+# Rewrite an adapter's lines with:
+#   cargo run -p pragma_rhi --example rhi_golden -- --adapter <adapter> --bless
+warp blend 93c4aa22dd1b756d
+warp compute 9d51dc0715786836
+warp depth_cull 492e794b16462f81
+warp msaa_resolve 4cd1a9f3c1703ad6
+warp srgb 9f93bf6617f01d54
+warp textured 3bd4194f04d5e1fe
+warp triangles 5a5e5453f3d6527b

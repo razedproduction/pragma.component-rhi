@@ -1,0 +1,76 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }}, 10 min)
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [handles, descriptors, transfers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # The corpus survives across nights: restore the latest one and save the extended one under a
+      # new key (caches are immutable).
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=600
+        env:
+          RUSTFLAGS: ""
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts
+
+  benches:
+    name: Benchmarks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      # Every benchmark (DECISIONS #23); the medians go into the job summary. Shared runners are
+      # noisy: compare measurements within one run (against the HashMap reference), not across
+      # nights.
+      - name: benches
+        shell: bash
+        run: |
+          cargo bench -p pragma_rhi -- --warm-up-time 1 --measurement-time 3 --noplot
+          python3 - "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json, pathlib, sys
+          root = pathlib.Path("target/criterion")
+          lines = ["### Benchmarks (median)", "", "| measurement | median |", "|---|---|"]
+          for path in sorted(root.glob("*/*/*/new/estimates.json")):
+              key = "/".join(path.parts[-5:-2])
+              ns = json.loads(path.read_text())["median"]["point_estimate"]
+              lines.append(f"| `{key}` | {ns / 1e3:.2f} µs |")
+          text = "\n".join(lines) + "\n"
+          print(text)
+          with open(sys.argv[1], "a", encoding="utf-8") as fh:
+              fh.write(text)
+          EOF

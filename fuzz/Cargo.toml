@@ -1,0 +1,44 @@
+# Fuzz targets of pragma.component-rhi (cargo-fuzz, nightly). A separate workspace: libFuzzer is
+# built from C++ (`libfuzzer-sys`), so it is part of neither users' dependency trees nor the
+# workspace audit and `cargo deny` (DECISIONS.md #21, as pragma.core #20).
+#
+#   cargo +nightly fuzz run handles
+#   cargo +nightly fuzz run descriptors
+#   cargo +nightly fuzz run transfers
+
+[package]
+name = "pragma_rhi_fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+pragma_rhi = { path = "../crates/pragma_rhi" }
+
+[[bin]]
+name = "handles"
+path = "fuzz_targets/handles.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "descriptors"
+path = "fuzz_targets/descriptors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transfers"
+path = "fuzz_targets/transfers.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

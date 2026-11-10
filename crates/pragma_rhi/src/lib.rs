@@ -28,7 +28,7 @@
 //! `raw-window-handle` (or a null surface for tests) is configured, acquired and presented by the
 //! device; an outdated swapchain is a [`SurfaceError::Outdated`], never a panic.
 //!
-//! No wgpu type appears in the public API (DECISIONS.md #8). The crate is at milestone M4; see
+//! No wgpu type appears in the public API (DECISIONS.md #8). The crate is at milestone M5; see
 //! `docs/roadmap.md` for what comes next and `docs/architecture.md` for the design.
 //!
 //! ```
@@ -62,6 +62,9 @@
 //! # Ok::<(), RhiError>(())
 //! ```
 #![forbid(unsafe_code)]
+// Proving that wgpu's pipeline handles are `Send` walks wgpu-core's registry types deeper than
+// the default 128; newer compilers turn that overflow into an error (rust-lang/rust#159228).
+#![recursion_limit = "256"]
 
 mod backend;
 mod binding;

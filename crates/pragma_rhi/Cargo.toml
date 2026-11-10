@@ -13,6 +13,10 @@ categories.workspace = true
 # Not published until the API is reviewed (docs/roadmap.md, M6).
 publish = false
 
+[lib]
+# Only the criterion targets below are benchmarks, so `cargo bench -- <criterion flags>` works.
+bench = false
+
 [dependencies]
 pragma_core = { workspace = true, features = ["jobs", "graph", "async"] }
 thiserror = { workspace = true }
@@ -24,6 +28,19 @@ bitflags = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "resources"
+harness = false
+
+[[bench]]
+name = "recording"
+harness = false
+
+[[bench]]
+name = "submission"
+harness = false
 
 [lints]
 workspace = true

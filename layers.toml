@@ -20,3 +20,4 @@ pragma_rhi = 0   # devices, resources, pipelines, command recording on the pragm
 # Deliberately accepted exceptions to the "no C/C++" rule.
 [purity.accepted]
 generator = "via pragma_core -> pragma_sync -> loom, only under cfg(loom) (pragma.core DECISIONS #7, #12); never reaches users' binaries (DECISIONS.md #5)"
+alloca = "via criterion, a dev dependency of the pragma_rhi benches only (pragma.core DECISIONS #17, pragma.component-ecs #16); never reaches users' binaries (DECISIONS.md #23)"
